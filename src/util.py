@@ -1,15 +1,21 @@
-"""공통 유틸 — 시각 파싱/포맷."""
+"""공통 유틸 — 시각 파싱/포맷.
+
+data.go.kr의 모든 시각은 한국시간(KST). 서버가 UTC(클라우드)여도
+일관되게 KST 기준으로 'now'를 계산한다.
+"""
 import datetime
 
 FMT = "%Y-%m-%d %H:%M:%S"
-
-
-def now_str():
-    return datetime.datetime.now().strftime(FMT)
+KST = datetime.timezone(datetime.timedelta(hours=9))
 
 
 def now_dt():
-    return datetime.datetime.now().replace(microsecond=0)
+    """현재 한국시간(KST), tz 없는 naive datetime."""
+    return datetime.datetime.now(KST).replace(tzinfo=None, microsecond=0)
+
+
+def now_str():
+    return now_dt().strftime(FMT)
 
 
 def parse_stat_dt(raw, default=None):

@@ -181,7 +181,7 @@ def live_status(stat_id):
     if df.empty:
         return info, df
 
-    now = pd.Timestamp.now()
+    now = pd.Timestamp(util.now_dt())  # KST 기준
 
     def status_text(row):
         s = int(row["stat"])
