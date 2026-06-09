@@ -120,7 +120,7 @@ def poll_changes(period=10, zcode=None, zscode=None):
                  for it in items if it.get("statId") and it.get("chgerId")]
 
     with db.get_conn() as conn:
-        known = db.known_charger_keys(conn, poll_keys)
+        # current_state에 있으면 곧 메타도 있는 충전기 → 별도 known 조회 생략(왕복 절감)
         current = db.load_current_states(conn, poll_keys)
         intervals, state_rows = [], []
         skipped = 0
@@ -129,8 +129,8 @@ def poll_changes(period=10, zcode=None, zscode=None):
             if not stat_id or not chger_id:
                 continue
             key = f"{stat_id}-{chger_id}"
-            if key not in known:
-                skipped += 1  # 아직 메타 없음 → 다음 refresh_full에서 편입
+            if key not in current:
+                skipped += 1  # 아직 현재상태 없음 → 다음 refresh_full에서 편입
                 continue
             stat = _to_stat(item.get("stat"))
             change_dt = util.parse_stat_dt(item.get("statUpdDt"), default=updated_at)

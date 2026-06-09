@@ -196,7 +196,7 @@ def upsert_chargers(conn, rows):
 
 # --- 이벤트(상태구간) ---
 
-def _chunked_in(conn, sql_tmpl, keys, chunk=400):
+def _chunked_in(conn, sql_tmpl, keys, chunk=2000):
     """keys를 chunk 단위 IN 절로 나눠 조회. sql_tmpl에 {ph} 자리표시자."""
     rows = []
     keys = list(keys)
