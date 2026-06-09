@@ -36,11 +36,15 @@ def _filters():
     with db.get_conn() as conn:
         zcodes = [r[0] for r in conn.execute(
             "SELECT DISTINCT zcode FROM stations WHERE zcode IS NOT NULL AND zcode <> '' ORDER BY zcode")]
-        dmin = conn.execute("SELECT MIN(start_dt) FROM state_intervals").fetchone()[0]
+        dmin = conn.execute(
+            "SELECT MIN(d) FROM ("
+            "  SELECT MIN(start_dt) d FROM state_intervals"
+            "  UNION ALL SELECT MIN(since_dt) d FROM current_state)"
+        ).fetchone()[0]
     return zcodes, dmin
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner="데이터 불러오는 중… (전국은 최초 1회 30~40초 소요)")
 def _load(zcode, start, end):
     return calculator.load_durations(zcode=zcode, start=start, end=end)
 

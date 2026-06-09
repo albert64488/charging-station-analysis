@@ -31,26 +31,43 @@ def _meta_df(conn, zcode=None):
     return db.fetch_df(conn, sql, params)
 
 
-def _intervals_df(conn, keys, t0, t1):
-    """[t0,t1]과 겹치는 닫힌 구간 + 현재 열린 구간."""
+def _earliest(conn):
+    """관측 시작 기준점 = 닫힌 구간/현재상태 진입시각 중 가장 이른 값."""
+    vals = []
+    for q in ("SELECT MIN(start_dt) FROM state_intervals",
+              "SELECT MIN(since_dt) FROM current_state"):
+        v = conn.execute(q).fetchone()[0]
+        if v:
+            vals.append(v)
+    return min(vals) if vals else None
+
+
+def _intervals_df(conn, zcode, t0, t1):
+    """[t0,t1]과 겹치는 닫힌 구간 + 현재 열린 구간 (지역 필터는 SQL에서)."""
+    zc = " AND s.zcode = ?" if zcode else ""
     closed = db.fetch_df(
         conn,
-        "SELECT charger_key, stat, start_dt, end_dt FROM state_intervals "
-        "WHERE end_dt >= ? AND start_dt <= ?",
-        [t0, t1],
+        "SELECT i.charger_key, i.stat, i.start_dt, i.end_dt "
+        "FROM state_intervals i "
+        "JOIN chargers c ON i.charger_key = c.charger_key "
+        "JOIN stations s ON c.stat_id = s.stat_id "
+        "WHERE i.end_dt >= ? AND i.start_dt <= ?" + zc,
+        [t0, t1] + ([str(zcode)] if zcode else []),
     )
     open_ = db.fetch_df(
         conn,
-        "SELECT charger_key, stat, since_dt AS start_dt FROM current_state "
-        "WHERE since_dt <= ?",
-        [t1],
+        "SELECT cs.charger_key, cs.stat, cs.since_dt AS start_dt "
+        "FROM current_state cs "
+        "JOIN chargers c ON cs.charger_key = c.charger_key "
+        "JOIN stations s ON c.stat_id = s.stat_id "
+        "WHERE cs.since_dt <= ?" + zc,
+        [t1] + ([str(zcode)] if zcode else []),
     )
     open_["end_dt"] = t1  # 열린 구간 끝 = 분석구간 끝
-    df = pd.concat([closed, open_[["charger_key", "stat", "start_dt", "end_dt"]]],
-                   ignore_index=True)
-    if not df.empty:
-        df = df[df["charger_key"].isin(keys)]
-    return df
+    return pd.concat(
+        [closed, open_[["charger_key", "stat", "start_dt", "end_dt"]]],
+        ignore_index=True,
+    )
 
 
 def load_durations(zcode=None, start=None, end=None):
@@ -60,11 +77,9 @@ def load_durations(zcode=None, start=None, end=None):
         meta = _meta_df(conn, zcode)
         if meta.empty:
             return pd.DataFrame()
-        keys = set(meta["charger_key"])
         if start is None:
-            row = conn.execute("SELECT MIN(start_dt) FROM state_intervals").fetchone()
-            start = row[0] or t1
-        iv = _intervals_df(conn, keys, start, t1)
+            start = _earliest(conn) or t1
+        iv = _intervals_df(conn, zcode, start, t1)
 
     if iv.empty:
         return pd.DataFrame()
