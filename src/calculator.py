@@ -161,6 +161,53 @@ def cpo_summary(charger_df, method="weighted"):
     return out.sort_values("충전기수", ascending=False).reset_index(drop=True)
 
 
+def live_status(stat_id):
+    """충전소 1곳의 실시간 충전기 상태 (무공해차 앱 상세화면 형태).
+
+    반환: (충전소정보 dict, 표시용 DataFrame)
+    """
+    with db.get_conn() as conn:
+        sinfo = db.fetch_df(
+            conn, "SELECT stat_nm, addr, busi_nm FROM stations WHERE stat_id = ?", [stat_id])
+        df = db.fetch_df(
+            conn,
+            "SELECT c.chger_id, c.chger_type, c.is_fast, c.output, "
+            "cs.stat, cs.since_dt, cs.stat_upd_dt "
+            "FROM chargers c JOIN current_state cs ON c.charger_key = cs.charger_key "
+            "WHERE c.stat_id = ? ORDER BY c.chger_id",
+            [stat_id],
+        )
+    info = sinfo.iloc[0].to_dict() if not sinfo.empty else {"stat_nm": "", "addr": "", "busi_nm": ""}
+    if df.empty:
+        return info, df
+
+    now = pd.Timestamp.now()
+
+    def status_text(row):
+        s = int(row["stat"])
+        if s == 3:  # 충전중 → 경과시간
+            since = pd.to_datetime(row["since_dt"], errors="coerce")
+            if pd.notna(since):
+                mins = max(0, int((now - since).total_seconds() // 60))
+                h, m = divmod(mins, 60)
+                return f"{h}시간{m}분 충전중"
+            return "충전중"
+        return config.STATUS_NAMES.get(s, str(s))
+
+    def gubun(row):
+        kw = int(row["output"]) if pd.notna(row["output"]) else "-"
+        return f"{'급속' if row['is_fast'] == 1 else '완속'} ({kw}kW)"
+
+    out = pd.DataFrame({
+        "충전기ID": df["chger_id"],
+        "구분": df.apply(gubun, axis=1),
+        "충전기타입": df["chger_type"].map(config.CHGER_TYPE_NAMES).fillna(df["chger_type"]),
+        "현재상태": df.apply(status_text, axis=1),
+        "갱신일시": df["stat_upd_dt"],
+    })
+    return info, out
+
+
 def summary(zcode=None, start=None, end=None, method="weighted"):
     chargers = load_durations(zcode=zcode, start=start, end=end)
     stations = station_summary(chargers, method=method)

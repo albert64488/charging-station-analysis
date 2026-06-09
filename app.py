@@ -131,13 +131,35 @@ with tab_station:
         stations[["충전소명", "운영사", "이용률", "장애율", "충전기수", "급속", "완속", "관측시간(h)"]],
         width="stretch", hide_index=True, column_config=COLCFG,
     )
-    st.subheader("충전기 상세")
+    st.subheader("충전소 상세 — 실시간 충전기 상태")
     sel = st.selectbox("충전소 선택", stations["충전소명"].tolist())
     sel_id = stations.loc[stations["충전소명"] == sel, "stat_id"].iloc[0]
-    detail = chargers[chargers["stat_id"] == sel_id][
-        ["chger_id", "충전기구분", "output", "이용률", "장애율", "관측시간(h)"]
-    ].rename(columns={"chger_id": "충전기ID", "output": "출력(kW)"})
-    st.dataframe(detail, width="stretch", hide_index=True, column_config=COLCFG)
+
+    info, live = calculator.live_status(sel_id)
+    st.markdown(
+        f"**🔌 {info['stat_nm']}**　|　운영사 **{info['busi_nm']}**　|　📍 {info['addr']}")
+
+    def _color(v):
+        v = str(v)
+        if "충전중" in v:
+            return "background-color:#d6f5d6;color:#147a14"   # 초록
+        if v == "사용가능":
+            return "background-color:#dbe9ff;color:#1456c4"   # 파랑
+        return "background-color:#fde2e1;color:#c0392b"       # 빨강(장애 등)
+
+    sty = live.style
+    try:
+        sty = sty.map(_color, subset=["현재상태"])
+    except AttributeError:
+        sty = sty.applymap(_color, subset=["현재상태"])
+    st.dataframe(sty, width="stretch", hide_index=True)
+    st.caption("‘충전중’ 경과시간 = 현재시각 − 마지막 상태변경 시각(갱신일시). 수집 주기(10분)만큼 지연될 수 있음.")
+
+    with st.expander("📊 기간 집계 보기 (이용률·장애율)"):
+        agg = chargers[chargers["stat_id"] == sel_id][
+            ["chger_id", "충전기구분", "output", "이용률", "장애율", "관측시간(h)"]
+        ].rename(columns={"chger_id": "충전기ID", "output": "출력(kW)"})
+        st.dataframe(agg, width="stretch", hide_index=True, column_config=COLCFG)
 
 # ===== 탭 3: 지도 =====
 with tab_map:
