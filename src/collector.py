@@ -115,9 +115,13 @@ def poll_changes(period=10, zcode=None, zscode=None):
     items = api_client.fetch_charger_status(period=period, zcode=zcode, zscode=zscode)
     updated_at = util.now_str()
 
+    # 변경분의 charger_key만 추려 그 범위만 DB 조회 (전체 51만 읽기 방지)
+    poll_keys = [f"{it.get('statId')}-{it.get('chgerId')}"
+                 for it in items if it.get("statId") and it.get("chgerId")]
+
     with db.get_conn() as conn:
-        known = db.known_charger_keys(conn)
-        current = db.load_current_states(conn)
+        known = db.known_charger_keys(conn, poll_keys)
+        current = db.load_current_states(conn, poll_keys)
         intervals, state_rows = [], []
         skipped = 0
         for item in items:

@@ -196,14 +196,32 @@ def upsert_chargers(conn, rows):
 
 # --- 이벤트(상태구간) ---
 
-def load_current_states(conn):
-    """{charger_key: (stat, since_dt)} 반환."""
-    cur = conn.execute("SELECT charger_key, stat, since_dt FROM current_state")
-    return {r[0]: (r[1], r[2]) for r in cur.fetchall()}
+def _chunked_in(conn, sql_tmpl, keys, chunk=400):
+    """keys를 chunk 단위 IN 절로 나눠 조회. sql_tmpl에 {ph} 자리표시자."""
+    rows = []
+    keys = list(keys)
+    for i in range(0, len(keys), chunk):
+        part = keys[i:i + chunk]
+        ph = ",".join("?" * len(part))
+        rows.extend(conn.execute(sql_tmpl.format(ph=ph), part).fetchall())
+    return rows
 
 
-def known_charger_keys(conn):
-    return {r[0] for r in conn.execute("SELECT charger_key FROM chargers")}
+def load_current_states(conn, keys=None):
+    """{charger_key: (stat, since_dt)}. keys 주면 해당 키만(변경분 폴링용)."""
+    if keys is None:
+        rows = conn.execute("SELECT charger_key, stat, since_dt FROM current_state").fetchall()
+    else:
+        rows = _chunked_in(
+            conn, "SELECT charger_key, stat, since_dt FROM current_state WHERE charger_key IN ({ph})", keys)
+    return {r[0]: (r[1], r[2]) for r in rows}
+
+
+def known_charger_keys(conn, keys=None):
+    if keys is None:
+        return {r[0] for r in conn.execute("SELECT charger_key FROM chargers")}
+    return {r[0] for r in _chunked_in(
+        conn, "SELECT charger_key FROM chargers WHERE charger_key IN ({ph})", keys)}
 
 
 def known_station_ids(conn):
