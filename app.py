@@ -23,7 +23,7 @@ st.set_page_config(page_title="충전소 추정 이용률 분석", layout="wide"
 
 # 이용률/가동률을 막대 게이지로 보여주기 위한 컬럼 설정
 PCT = lambda label: st.column_config.ProgressColumn(label, format="%.1f%%", min_value=0, max_value=100)
-COLCFG = {"이용률": PCT("이용률"), "가동률": PCT("가동률"), "장애율": PCT("장애율")}
+COLCFG = {"이용률": PCT("이용률"), "장애율": PCT("장애율")}
 
 st.title("⚡ 충전소 추정 이용률 분석")
 st.caption("한국환경공단 충전기 상태 데이터 · 상태 변경 이벤트 기반 시간 점유율(이용률·가동률)")
@@ -93,13 +93,12 @@ stations = calculator.station_summary(chargers, method=method)
 cpos = calculator.cpo_summary(chargers, method=method)
 
 # ---------------- 상단 KPI ----------------
-k = st.columns(6)
+k = st.columns(5)
 k[0].metric("충전소 수", f"{stations['충전소명'].nunique():,}")
 k[1].metric("충전기 수", f"{len(chargers):,}")
 k[2].metric("운영사 수", f"{chargers['busi_nm'].nunique():,}")
 k[3].metric("평균 이용률", f"{chargers['이용률'].mean():.1f}%")
-k[4].metric("평균 가동률", f"{chargers['가동률'].mean():.1f}%")
-k[5].metric("관측시간 합", f"{chargers['관측시간(h)'].sum():,.0f} h")
+k[4].metric("관측시간 합", f"{chargers['관측시간(h)'].sum():,.0f} h")
 
 st.divider()
 tab_cpo, tab_station, tab_map = st.tabs(["🏷️ 운영사(CPO) 비교", "🏢 충전소·충전기", "🗺️ 지도"])
@@ -127,16 +126,16 @@ with tab_cpo:
 
 # ===== 탭 2: 충전소·충전기 =====
 with tab_station:
-    st.subheader("충전소별 이용률·가동률")
+    st.subheader("충전소별 이용률")
     st.dataframe(
-        stations[["충전소명", "운영사", "이용률", "가동률", "장애율", "충전기수", "급속", "완속", "관측시간(h)"]],
+        stations[["충전소명", "운영사", "이용률", "장애율", "충전기수", "급속", "완속", "관측시간(h)"]],
         width="stretch", hide_index=True, column_config=COLCFG,
     )
     st.subheader("충전기 상세")
     sel = st.selectbox("충전소 선택", stations["충전소명"].tolist())
     sel_id = stations.loc[stations["충전소명"] == sel, "stat_id"].iloc[0]
     detail = chargers[chargers["stat_id"] == sel_id][
-        ["chger_id", "충전기구분", "output", "이용률", "가동률", "장애율", "관측시간(h)"]
+        ["chger_id", "충전기구분", "output", "이용률", "장애율", "관측시간(h)"]
     ].rename(columns={"chger_id": "충전기ID", "output": "출력(kW)"})
     st.dataframe(detail, width="stretch", hide_index=True, column_config=COLCFG)
 
@@ -157,5 +156,5 @@ with tab_map:
     else:
         st.caption("위치(위경도) 데이터가 없습니다.")
 
-st.caption("이용률 = 충전중 시간 / 전체 · 가동률 = (사용가능+충전중) 시간 / 전체 · "
+st.caption("이용률 = 충전중 시간 / 전체 관측시간 · "
            "장애율 = (통신이상+운영중지+점검중+미확인) 시간 / 전체")
