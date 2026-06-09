@@ -3,4 +3,4 @@ requests>=2.31
 python-dotenv>=1.0
 pandas>=2.0
 streamlit>=1.30
-libsql-experimental>=0.0.40
+libsql-client>=0.3

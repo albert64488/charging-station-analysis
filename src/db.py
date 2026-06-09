@@ -66,6 +66,62 @@ def _apply_schema(conn):
             conn.execute(s)
 
 
+# --- Turso(libsql-client) 어댑터: sqlite3.Connection처럼 보이게 감싼다 ---
+
+def _turso_url():
+    u = config.TURSO_DATABASE_URL
+    if u.startswith("libsql://"):
+        u = "https://" + u[len("libsql://"):]
+    return u
+
+
+class _TursoCursor:
+    def __init__(self, rs):
+        self._rows = [tuple(r) for r in rs.rows]
+        self.description = [(c,) for c in rs.columns] if rs.columns else None
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class _TursoConn:
+    """db.py가 쓰는 execute/executemany/commit 인터페이스만 구현."""
+
+    BATCH = 500
+
+    def __init__(self, client):
+        self._c = client
+
+    def execute(self, sql, params=()):
+        return _TursoCursor(self._c.execute(sql, list(params)))
+
+    def executemany(self, sql, rows):
+        rows = list(rows)
+        for i in range(0, len(rows), self.BATCH):
+            self._c.batch([(sql, list(r)) for r in rows[i:i + self.BATCH]])
+
+    def executescript(self, script):
+        for stmt in script.split(";"):
+            s = stmt.strip()
+            if s:
+                self._c.execute(s)
+
+    def commit(self):
+        pass  # libsql-client는 자동 커밋
+
+    def sync(self):
+        pass
+
+    def close(self):
+        self._c.close()
+
+
 def init_db(path=None):
     with get_conn(path):
         pass
@@ -75,20 +131,15 @@ def init_db(path=None):
 def get_conn(path=None):
     # Turso(클라우드) 설정 시 호스팅 SQLite 사용, 아니면 로컬 파일
     if config.TURSO_DATABASE_URL:
-        import libsql_experimental as libsql
-        d = os.path.dirname(config.TURSO_REPLICA_PATH)
-        if d:
-            os.makedirs(d, exist_ok=True)
-        conn = libsql.connect(
-            config.TURSO_REPLICA_PATH,
-            sync_url=config.TURSO_DATABASE_URL,
-            auth_token=config.TURSO_AUTH_TOKEN,
-        )
-        conn.sync()           # 원격 → 로컬 복제본 최신화
+        import libsql_client
+        client = libsql_client.create_client_sync(
+            url=_turso_url(), auth_token=config.TURSO_AUTH_TOKEN)
+        conn = _TursoConn(client)
         _apply_schema(conn)
-        yield conn
-        conn.commit()
-        conn.sync()           # 로컬 변경 → 원격 반영
+        try:
+            yield conn
+        finally:
+            conn.close()
         return
 
     path = path or config.DB_PATH
