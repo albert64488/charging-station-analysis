@@ -1,0 +1,10 @@
+# 로컬 DB / 복제본 (클라우드는 Turso 사용 → 커밋 안 함)
+data/
+# 비밀키
+.env
+# 파이썬
+__pycache__/
+*.pyc
+.venv/
+venv/
+.streamlit/secrets.toml

@@ -1,0 +1,4 @@
+# 수집 전용(GitHub Actions) — 대시보드 의존성 제외로 가볍게
+requests>=2.31
+python-dotenv>=1.0
+libsql-experimental>=0.0.40
