@@ -93,7 +93,7 @@ class _TursoCursor:
 class _TursoConn:
     """db.py가 쓰는 execute/executemany/commit 인터페이스만 구현."""
 
-    BATCH = 500
+    BATCH = 1000
 
     def __init__(self, client):
         self._c = client
@@ -204,6 +204,10 @@ def load_current_states(conn):
 
 def known_charger_keys(conn):
     return {r[0] for r in conn.execute("SELECT charger_key FROM chargers")}
+
+
+def known_station_ids(conn):
+    return {r[0] for r in conn.execute("SELECT stat_id FROM stations")}
 
 
 def insert_intervals(conn, rows):

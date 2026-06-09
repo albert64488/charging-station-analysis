@@ -88,8 +88,14 @@ def refresh_full(zcode=None, zscode=None, use_sample=False):
         changes.append((key, stat, change_dt))
 
     with db.get_conn() as conn:
-        db.upsert_stations(conn, list(station_rows.values()))
-        db.upsert_chargers(conn, charger_rows)
+        # 메타는 신규만 기록 (기존 514k 재upsert 방지 → 쓰기/시간 대폭 절감)
+        known_ch = db.known_charger_keys(conn)
+        known_st = db.known_station_ids(conn)
+        new_stations = [r for sid, r in station_rows.items() if sid not in known_st]
+        new_chargers = [r for r in charger_rows if r[0] not in known_ch]
+        db.upsert_stations(conn, new_stations)
+        db.upsert_chargers(conn, new_chargers)
+
         current = db.load_current_states(conn)
         intervals, state_rows = [], []
         for key, stat, change_dt in changes:
@@ -99,7 +105,7 @@ def refresh_full(zcode=None, zscode=None, use_sample=False):
         conn.commit()
         s = db.stats(conn)
     return {"source": "api", "op": "refresh", "fetched": len(changes),
-            "new_intervals": len(intervals), "stats": s}
+            "new_meta": len(new_chargers), "new_intervals": len(intervals), "stats": s}
 
 
 def poll_changes(period=10, zcode=None, zscode=None):
