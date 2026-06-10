@@ -59,9 +59,10 @@ if not zcodes or not dmin:
 # ---------------- 사이드바 필터 ----------------
 with st.sidebar:
     st.header("🔎 필터")
-    zopts = {"전국 (전체)": None}
-    zopts.update({f"{config.zcode_name(z)} ({z})": z for z in zcodes})
+    # 전국 통합 보기는 메모리 과다(51만 행)로 임시 비활성화 → 지역별 제공
+    zopts = {f"{config.zcode_name(z)} ({z})": z for z in zcodes}
     zcode = zopts[st.selectbox("지역", list(zopts.keys()))]
+    st.caption("ℹ️ 전국 통합 보기는 성능 최적화 작업 중이라 현재 지역별로 제공됩니다.")
 
     dmin_d = pd.to_datetime(dmin).date()
     today = datetime.date.today()
