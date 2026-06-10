@@ -58,9 +58,10 @@ def _apply_change(current, charger_key, new_stat, change_dt, intervals, state_ro
         state_rows.append((charger_key, new_stat, change_dt, change_dt, updated_at))
         return
     prev_stat, prev_since = prev
-    if prev_stat == new_stat:
-        return  # 상태 동일 → 구간 유지
-    # 상태 변경: 직전 구간 닫기 (end는 start 이상으로 클램프)
+    # 같은 상태 + 진입시각이 더 최신도 아님 → 진짜 변화 없음
+    if prev_stat == new_stat and change_dt <= prev_since:
+        return
+    # 상태변경 OR 같은상태지만 statUpdDt가 더 최신(놓친 재진입) → 구간 닫고 새로 시작
     end_dt = change_dt if change_dt >= prev_since else prev_since
     intervals.append((charger_key, prev_stat, prev_since, end_dt))
     current[charger_key] = (new_stat, change_dt)
