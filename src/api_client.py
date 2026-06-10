@@ -72,13 +72,18 @@ def _parse(xml_text):
     return items, total
 
 
-def _fetch_all(operation, zcode=None, zscode=None, period=None, num_of_rows=None):
+def _fetch_all(operation, zcode=None, zscode=None, period=None, num_of_rows=None, tolerant=False):
     if not config.DATAGO_SERVICE_KEY:
         raise RuntimeError("DATAGO_SERVICE_KEY가 설정되지 않았습니다. .env를 확인하세요.")
     num = num_of_rows or config.NUM_OF_ROWS
     all_items, page = [], 1
     while True:
-        xml_text = _fetch_page(operation, page, num, zcode, zscode, period)
+        try:
+            xml_text = _fetch_page(operation, page, num, zcode, zscode, period)
+        except RuntimeError:
+            if tolerant and all_items:
+                break  # 일부 페이지 실패 → 받은 만큼만 사용(poll)
+            raise
         items, total = _parse(xml_text)
         all_items.extend(items)
         if not items or len(items) < num:
@@ -98,4 +103,4 @@ def fetch_charger_info(zcode=None, zscode=None, num_of_rows=None):
 def fetch_charger_status(period=10, zcode=None, zscode=None, num_of_rows=None):
     """최근 period(분, 최대 10) 내 상태 변경분. zcode/zscode 비우면 전국."""
     return _fetch_all("getChargerStatus", zcode=zcode, zscode=zscode,
-                      period=period, num_of_rows=num_of_rows)
+                      period=period, num_of_rows=num_of_rows, tolerant=True)

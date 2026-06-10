@@ -34,12 +34,17 @@ jobs:
       - name: 모드 결정
         id: m
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "mode=${{ github.event.inputs.mode }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "30 */6 * * *" ]; then
+          if [ "${{ github.event_name }}" = "schedule" ]; then
             echo "mode=refresh" >> "$GITHUB_OUTPUT"
           else
-            echo "mode=poll" >> "$GITHUB_OUTPUT"
+            # cron-job.org 트리거(workflow_dispatch). 기본 poll,
+            # 단 UTC 0/6/12/18시의 0~9분 트리거는 refresh로 전환(하루 4회 빈틈 보정).
+            H=$(date -u +%H); M=$(date -u +%M)
+            if [ "$M" -lt 10 ] && [ $((10#$H % 6)) -eq 0 ]; then
+              echo "mode=refresh" >> "$GITHUB_OUTPUT"
+            else
+              echo "mode=${{ github.event.inputs.mode }}" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: 수집 실행 (${{ steps.m.outputs.mode }})
