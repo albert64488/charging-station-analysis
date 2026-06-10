@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS state_intervals (
     end_dt      TEXT
 );
 
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_chargers_stat ON chargers(stat_id);
 CREATE INDEX IF NOT EXISTS idx_si_charger    ON state_intervals(charger_key);
 CREATE INDEX IF NOT EXISTS idx_si_start      ON state_intervals(start_dt);
@@ -251,6 +256,19 @@ def upsert_current_states(conn, rows):
         """,
         rows,
     )
+
+
+def set_meta(conn, key, value):
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
+    )
+
+
+def get_meta(conn, key, default=None):
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else default
 
 
 def stats(conn):

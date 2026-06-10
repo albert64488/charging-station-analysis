@@ -117,6 +117,8 @@ def refresh_full(zcode=None, zscode=None, use_sample=False):
     if zcode or zscode:
         res = _refresh_region(zcode, zscode, updated_at)
         with db.get_conn() as conn:
+            db.set_meta(conn, "last_refresh_at", updated_at)
+            conn.commit()
             res["stats"] = db.stats(conn)
         res.update({"source": "api", "op": "refresh", "failed": []})
         return res
@@ -132,6 +134,8 @@ def refresh_full(zcode=None, zscode=None, use_sample=False):
         except Exception as e:
             failed.append(f"{z}({type(e).__name__})")
     with db.get_conn() as conn:
+        db.set_meta(conn, "last_refresh_at", updated_at)
+        conn.commit()
         s = db.stats(conn)
     return {"source": "api", "op": "refresh", "failed": failed, "stats": s, **agg}
 
@@ -165,6 +169,7 @@ def poll_changes(period=10, zcode=None, zscode=None):
             _apply_change(current, key, stat, change_dt, intervals, state_rows, updated_at)
         db.insert_intervals(conn, intervals)
         db.upsert_current_states(conn, state_rows)
+        db.set_meta(conn, "last_poll_at", updated_at)
         conn.commit()
         s = db.stats(conn)
     return {"source": "api", "op": "poll", "period": period, "fetched": len(items),

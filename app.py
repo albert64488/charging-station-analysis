@@ -74,7 +74,7 @@ def render_station_detail(stat_id, agg_df=None):
             st.dataframe(detail, width="stretch", hide_index=True, column_config=COLCFG)
 
 st.title("⚡ 충전소 추정 이용률 분석")
-st.caption("한국환경공단 충전기 상태 데이터 · 상태 변경 이벤트 기반 시간 점유율(이용률·가동률)")
+st.caption("한국환경공단 충전기 상태 데이터 · 상태 변경 이벤트 기반 시간 이용률")
 
 db.init_db()
 
@@ -97,12 +97,24 @@ def _load(zcode, start, end):
     return calculator.load_durations(zcode=zcode, start=start, end=end)
 
 
+@st.cache_data(ttl=60)
+def _last_collected():
+    with db.get_conn() as conn:
+        return db.get_meta(conn, "last_poll_at"), db.get_meta(conn, "last_refresh_at")
+
+
 zcodes, dmin = _filters()
 if not zcodes or not dmin:
     st.warning("수집된 데이터가 없습니다. 먼저 터미널에서 실행하세요:\n\n"
                "`python run_collect.py seed-sample --days 7`  (샘플)\n\n"
                "`python run_collect.py refresh` → `python run_collect.py poll`  (실데이터)")
     st.stop()
+
+_poll_at, _refresh_at = _last_collected()
+st.caption(
+    f"🕐 마지막 수집(poll): **{_poll_at or '아직 없음'}** · "
+    f"마지막 전수보정(refresh): {_refresh_at or '아직 없음'}　"
+    f"(KST · 10분마다 자동 수집)")
 
 # ---------------- 사이드바 필터 ----------------
 with st.sidebar:
