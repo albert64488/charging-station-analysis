@@ -7,6 +7,7 @@
 """
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 
 import config
@@ -103,13 +104,28 @@ class _TursoConn:
     def __init__(self, client):
         self._c = client
 
+    def _retry(self, fn):
+        """Turso 일시 오류(502/503/504/timeout)에 재시도."""
+        for attempt in range(config.MAX_RETRIES):
+            try:
+                return fn()
+            except Exception as e:
+                msg = str(e).lower()
+                transient = any(s in msg for s in
+                                ("502", "503", "504", "timeout", "server_error", "reset"))
+                if transient and attempt < config.MAX_RETRIES - 1:
+                    time.sleep(config.RETRY_BACKOFF * (attempt + 1))
+                    continue
+                raise
+
     def execute(self, sql, params=()):
-        return _TursoCursor(self._c.execute(sql, list(params)))
+        return _TursoCursor(self._retry(lambda: self._c.execute(sql, list(params))))
 
     def executemany(self, sql, rows):
         rows = list(rows)
         for i in range(0, len(rows), self.BATCH):
-            self._c.batch([(sql, list(r)) for r in rows[i:i + self.BATCH]])
+            chunk = rows[i:i + self.BATCH]
+            self._retry(lambda c=chunk: self._c.batch([(sql, list(r)) for r in c]))
 
     def executescript(self, script):
         for stmt in script.split(";"):
