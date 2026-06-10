@@ -8,9 +8,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import db, calculator as cal  # noqa: E402
 
+term = sys.argv[1] if len(sys.argv) > 1 else "반포써밋"
 with db.get_conn() as conn:
     r = db.fetch_df(
-        conn, "SELECT stat_id, stat_nm FROM stations WHERE stat_nm LIKE '%반포써밋%'", [])
+        conn, "SELECT stat_id, stat_nm FROM stations WHERE stat_nm LIKE ?", [f"%{term}%"])
 
 print("찾은 충전소:", r.values.tolist())
 if len(r):
