@@ -53,7 +53,7 @@ def render_station_detail(stat_id, agg_df=None):
         m[1].metric("충전기 수", f"{len(ch)}")
         m[2].metric("급속 / 완속",
                     f"{int((ch['is_fast'] == 1).sum())} / {int((ch['is_fast'] == 0).sum())}")
-        m[3].metric("관측시간", f"{ch['관측시간(h)'].sum():.0f} h")
+        m[3].metric("관측시간(충전기당)", f"{ch['관측시간(h)'].mean():.0f} h")
 
     st.markdown("**실시간 충전기 상태**")
     if live is None or live.empty:
@@ -159,7 +159,7 @@ k[0].metric("충전소 수", f"{stations['충전소명'].nunique():,}")
 k[1].metric("충전기 수", f"{len(chargers):,}")
 k[2].metric("운영사 수", f"{chargers['busi_nm'].nunique():,}")
 k[3].metric("평균 이용률", f"{chargers['이용률'].mean():.1f}%")
-k[4].metric("관측시간 합", f"{chargers['관측시간(h)'].sum():,.0f} h")
+k[4].metric("관측시간(충전기당)", f"{chargers['관측시간(h)'].mean():,.0f} h")
 
 st.divider()
 tab_search, tab_cpo, tab_station, tab_map = st.tabs(

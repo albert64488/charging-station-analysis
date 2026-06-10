@@ -124,7 +124,7 @@ def _agg_rates(charger_df, key, method):
         장애율=("장애율", "mean"),
         충전기수=("charger_key", "size"),
         급속=("is_fast", "sum"),
-        관측시간=("관측시간(h)", "sum"),
+        관측시간=("관측시간(h)", "mean"),   # 충전기 1대당 평균 관측시간
     )
     if method == "weighted":
         wmask = g["sum_w"] > 0
