@@ -36,31 +36,42 @@ def _status_color(v):
 
 
 def render_station_detail(stat_id, agg_df=None):
-    """선택/검색한 충전소의 실시간 상태 + 기간 집계 표시 (탭 공용)."""
+    """선택/검색한 충전소의 이용률 + 실시간 상태 (탭 공용)."""
     info, live = calculator.live_status(stat_id)
     st.markdown(
         f"**🔌 {info.get('stat_nm', '')}**　|　운영사 **{info.get('busi_nm', '')}**　|　📍 {info.get('addr', '')}")
+
+    # 이 충전소의 기간 이용률 (충전기별)
+    if agg_df is not None and not agg_df.empty and (agg_df["stat_id"] == stat_id).any():
+        ch = agg_df[agg_df["stat_id"] == stat_id]
+    else:
+        ch = calculator.load_durations(stat_id=stat_id)
+
+    if ch is not None and not ch.empty:
+        m = st.columns(4)
+        m[0].metric("평균 이용률", f"{ch['이용률'].mean():.1f}%")
+        m[1].metric("충전기 수", f"{len(ch)}")
+        m[2].metric("급속 / 완속",
+                    f"{int((ch['is_fast'] == 1).sum())} / {int((ch['is_fast'] == 0).sum())}")
+        m[3].metric("관측시간", f"{ch['관측시간(h)'].sum():.0f} h")
+
+    st.markdown("**실시간 충전기 상태**")
     if live is None or live.empty:
-        st.info("이 충전소의 실시간 상태 데이터가 아직 없습니다.")
-        return
-    sty = live.style
-    try:
-        sty = sty.map(_status_color, subset=["현재상태"])
-    except AttributeError:
-        sty = sty.applymap(_status_color, subset=["현재상태"])
-    st.dataframe(sty, width="stretch", hide_index=True)
-    st.caption("'충전중' 경과시간 = 현재시각 − 마지막 상태변경 시각(갱신일시). 수집 주기(10분)만큼 지연될 수 있음.")
-    with st.expander("📊 기간 집계 보기 (이용률·장애율)"):
-        if agg_df is not None and not agg_df.empty and (agg_df["stat_id"] == stat_id).any():
-            ch = agg_df[agg_df["stat_id"] == stat_id]
-        else:
-            ch = calculator.load_durations(stat_id=stat_id)
-        if ch is not None and not ch.empty:
+        st.info("실시간 상태 데이터가 아직 없습니다.")
+    else:
+        sty = live.style
+        try:
+            sty = sty.map(_status_color, subset=["현재상태"])
+        except AttributeError:
+            sty = sty.applymap(_status_color, subset=["현재상태"])
+        st.dataframe(sty, width="stretch", hide_index=True)
+        st.caption("'충전중' 경과시간 = 현재시각 − 마지막 상태변경 시각(갱신일시). 수집 주기(10분)만큼 지연될 수 있음.")
+
+    if ch is not None and not ch.empty:
+        with st.expander("📊 충전기별 이용률·장애율"):
             detail = ch[["chger_id", "충전기구분", "output", "이용률", "장애율", "관측시간(h)"]].rename(
                 columns={"chger_id": "충전기ID", "output": "출력(kW)"})
             st.dataframe(detail, width="stretch", hide_index=True, column_config=COLCFG)
-        else:
-            st.caption("기간 집계 데이터가 아직 없습니다.")
 
 st.title("⚡ 충전소 추정 이용률 분석")
 st.caption("한국환경공단 충전기 상태 데이터 · 상태 변경 이벤트 기반 시간 점유율(이용률·가동률)")
