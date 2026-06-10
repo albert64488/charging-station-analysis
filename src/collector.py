@@ -169,6 +169,8 @@ def poll_changes(period=10, zcode=None, zscode=None):
             _apply_change(current, key, stat, change_dt, intervals, state_rows, updated_at)
         db.insert_intervals(conn, intervals)
         db.upsert_current_states(conn, state_rows)
+        if not db.get_meta(conn, "observation_start_at"):
+            db.set_meta(conn, "observation_start_at", updated_at)
         db.set_meta(conn, "last_poll_at", updated_at)
         conn.commit()
         s = db.stats(conn)

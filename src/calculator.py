@@ -36,7 +36,10 @@ def _meta_df(conn, zcode=None, stat_id=None):
 
 
 def _earliest(conn):
-    """관측 시작 기준점 = 닫힌 구간/현재상태 진입시각 중 가장 이른 값."""
+    """관측 시작 기준점 = 수집 시작 시각(observation_start_at). 없으면 가장 이른 구간."""
+    obs = db.get_meta(conn, "observation_start_at")
+    if obs:
+        return obs
     vals = []
     for q in ("SELECT MIN(start_dt) FROM state_intervals",
               "SELECT MIN(since_dt) FROM current_state"):

@@ -21,4 +21,4 @@ if len(r):
     c = cal.load_durations(stat_id=sid)
     print(f"\n단일충전소 이용률 계산: 충전기 {len(c)}행, {time.time()-t:.1f}초")
     if len(c):
-        print(c[["chger_id", "이용률", "장애율"]].to_string(index=False))
+        print(c[["chger_id", "이용률", "장애율", "관측시간(h)"]].to_string(index=False))
