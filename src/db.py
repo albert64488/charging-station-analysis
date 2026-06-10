@@ -224,8 +224,11 @@ def known_charger_keys(conn, keys=None):
         conn, "SELECT charger_key FROM chargers WHERE charger_key IN ({ph})", keys)}
 
 
-def known_station_ids(conn):
-    return {r[0] for r in conn.execute("SELECT stat_id FROM stations")}
+def known_station_ids(conn, ids=None):
+    if ids is None:
+        return {r[0] for r in conn.execute("SELECT stat_id FROM stations")}
+    return {r[0] for r in _chunked_in(
+        conn, "SELECT stat_id FROM stations WHERE stat_id IN ({ph})", ids)}
 
 
 def insert_intervals(conn, rows):

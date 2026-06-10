@@ -39,8 +39,11 @@ def main():
     if args.cmd == "refresh":
         zcode, zscode = _region(args)
         r = collector.refresh_full(zcode=zcode, zscode=zscode)
-        print(f"[refresh] source={r['source']} 조회 {r.get('fetched','?')}건 / "
-              f"신규메타 {r.get('new_meta', 0)} / 신규구간 {r['new_intervals']}")
+        msg = (f"[refresh] source={r['source']} 조회 {r.get('fetched','?')}건 / "
+               f"신규메타 {r.get('new_meta', 0)} / 신규구간 {r['new_intervals']}")
+        if r.get("failed"):
+            msg += f" / 실패지역 {r['failed']}"
+        print(msg)
     elif args.cmd == "poll":
         zcode, zscode = _region(args)
         r = collector.poll_changes(period=args.period, zcode=zcode, zscode=zscode)

@@ -67,15 +67,16 @@ def _apply_change(current, charger_key, new_stat, change_dt, intervals, state_ro
     state_rows.append((charger_key, new_stat, change_dt, change_dt, updated_at))
 
 
-def refresh_full(zcode=None, zscode=None, use_sample=False):
-    """전수 조회로 메타 갱신 + 현재상태 시드/보정."""
-    if use_sample or not config.DATAGO_SERVICE_KEY:
-        return seed_sample()
-    items = api_client.fetch_charger_info(zcode=zcode, zscode=zscode)
-    updated_at = util.now_str()
+# 전국 시·도 지역코드 (전수 refresh를 지역별로 분할 → API 504에 견고)
+ZCODES_ALL = ["11", "26", "27", "28", "29", "30", "31", "36", "41",
+              "43", "44", "46", "47", "48", "50", "51", "52"]
 
-    station_rows, charger_rows = {}, []
-    changes = []  # (charger_key, stat, change_dt)
+
+def _refresh_region(zcode, zscode, updated_at):
+    """한 지역 전수 조회 → 메타 신규분 + 현재상태 변경분 기록 (지역별 커밋)."""
+    items = api_client.fetch_charger_info(zcode=zcode, zscode=zscode)
+
+    station_rows, charger_rows, changes = {}, [], []
     for item in items:
         m = _meta_rows(item, updated_at)
         if not m:
@@ -83,29 +84,56 @@ def refresh_full(zcode=None, zscode=None, use_sample=False):
         srow, crow, key = m
         station_rows[srow[0]] = srow
         charger_rows.append(crow)
-        stat = _to_stat(item.get("stat"))
-        change_dt = util.parse_stat_dt(item.get("statUpdDt"), default=updated_at)
-        changes.append((key, stat, change_dt))
+        changes.append((key, _to_stat(item.get("stat")),
+                        util.parse_stat_dt(item.get("statUpdDt"), default=updated_at)))
 
+    keys = [c[0] for c in charger_rows]
+    sids = list(station_rows.keys())
     with db.get_conn() as conn:
-        # 메타는 신규만 기록 (기존 514k 재upsert 방지 → 쓰기/시간 대폭 절감)
-        known_ch = db.known_charger_keys(conn)
-        known_st = db.known_station_ids(conn)
-        new_stations = [r for sid, r in station_rows.items() if sid not in known_st]
+        known_ch = db.known_charger_keys(conn, keys)
+        known_st = db.known_station_ids(conn, sids)
+        db.upsert_stations(conn, [r for sid, r in station_rows.items() if sid not in known_st])
         new_chargers = [r for r in charger_rows if r[0] not in known_ch]
-        db.upsert_stations(conn, new_stations)
         db.upsert_chargers(conn, new_chargers)
 
-        current = db.load_current_states(conn)
+        current = db.load_current_states(conn, keys)
         intervals, state_rows = [], []
         for key, stat, change_dt in changes:
             _apply_change(current, key, stat, change_dt, intervals, state_rows, updated_at)
         db.insert_intervals(conn, intervals)
         db.upsert_current_states(conn, state_rows)
         conn.commit()
+    return {"fetched": len(changes), "new_meta": len(new_chargers),
+            "new_intervals": len(intervals)}
+
+
+def refresh_full(zcode=None, zscode=None, use_sample=False):
+    """전수 조회로 메타 갱신 + 현재상태 보정. 전국이면 시·도별로 분할 수행."""
+    if use_sample or not config.DATAGO_SERVICE_KEY:
+        return seed_sample()
+    updated_at = util.now_str()
+
+    # 특정 지역 지정 시 단일 수행
+    if zcode or zscode:
+        res = _refresh_region(zcode, zscode, updated_at)
+        with db.get_conn() as conn:
+            res["stats"] = db.stats(conn)
+        res.update({"source": "api", "op": "refresh", "failed": []})
+        return res
+
+    # 전국: 시·도별 순회 (한 지역 실패해도 나머지는 저장)
+    agg = {"fetched": 0, "new_meta": 0, "new_intervals": 0}
+    failed = []
+    for z in ZCODES_ALL:
+        try:
+            r = _refresh_region(z, None, updated_at)
+            for k in agg:
+                agg[k] += r[k]
+        except Exception as e:
+            failed.append(f"{z}({type(e).__name__})")
+    with db.get_conn() as conn:
         s = db.stats(conn)
-    return {"source": "api", "op": "refresh", "fetched": len(changes),
-            "new_meta": len(new_chargers), "new_intervals": len(intervals), "stats": s}
+    return {"source": "api", "op": "refresh", "failed": failed, "stats": s, **agg}
 
 
 def poll_changes(period=10, zcode=None, zscode=None):
