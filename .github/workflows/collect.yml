@@ -2,7 +2,7 @@ name: collect
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # 10분마다 델타 poll (베스트에포트 — 지연/누락 가능)
+    # poll(10분)은 cron-job.org가 안정적으로 트리거함. 여기선 refresh만 백업 스케줄로.
     - cron: "30 */6 * * *"   # 하루 4회 전수 refresh (자기보정)
   workflow_dispatch:          # 수동 실행(시드용). mode 입력 선택
     inputs:
