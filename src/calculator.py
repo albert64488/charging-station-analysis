@@ -18,16 +18,20 @@ import config
 from src import db, util
 
 
-def _meta_df(conn, zcode=None):
+def _meta_df(conn, zcode=None, stat_id=None):
     sql = """
         SELECT c.charger_key, c.stat_id, c.chger_id, c.is_fast, c.output, c.busi_nm,
                s.stat_nm, s.lat, s.lng, s.zcode
         FROM chargers c JOIN stations s ON c.stat_id = s.stat_id
+        WHERE 1=1
     """
     params = []
     if zcode:
-        sql += " WHERE s.zcode = ?"
+        sql += " AND s.zcode = ?"
         params.append(str(zcode))
+    if stat_id:
+        sql += " AND s.stat_id = ?"
+        params.append(stat_id)
     return db.fetch_df(conn, sql, params)
 
 
@@ -42,17 +46,18 @@ def _earliest(conn):
     return min(vals) if vals else None
 
 
-def _intervals_df(conn, zcode, t0, t1):
-    """[t0,t1]과 겹치는 닫힌 구간 + 현재 열린 구간 (지역 필터는 SQL에서)."""
-    zc = " AND s.zcode = ?" if zcode else ""
+def _intervals_df(conn, zcode, t0, t1, stat_id=None):
+    """[t0,t1]과 겹치는 닫힌 구간 + 현재 열린 구간 (지역/충전소 필터는 SQL에서)."""
+    filt = (" AND s.zcode = ?" if zcode else "") + (" AND s.stat_id = ?" if stat_id else "")
+    extra = ([str(zcode)] if zcode else []) + ([stat_id] if stat_id else [])
     closed = db.fetch_df(
         conn,
         "SELECT i.charger_key, i.stat, i.start_dt, i.end_dt "
         "FROM state_intervals i "
         "JOIN chargers c ON i.charger_key = c.charger_key "
         "JOIN stations s ON c.stat_id = s.stat_id "
-        "WHERE i.end_dt >= ? AND i.start_dt <= ?" + zc,
-        [t0, t1] + ([str(zcode)] if zcode else []),
+        "WHERE i.end_dt >= ? AND i.start_dt <= ?" + filt,
+        [t0, t1] + extra,
     )
     open_ = db.fetch_df(
         conn,
@@ -60,8 +65,8 @@ def _intervals_df(conn, zcode, t0, t1):
         "FROM current_state cs "
         "JOIN chargers c ON cs.charger_key = c.charger_key "
         "JOIN stations s ON c.stat_id = s.stat_id "
-        "WHERE cs.since_dt <= ?" + zc,
-        [t1] + ([str(zcode)] if zcode else []),
+        "WHERE cs.since_dt <= ?" + filt,
+        [t1] + extra,
     )
     open_["end_dt"] = t1  # 열린 구간 끝 = 분석구간 끝
     return pd.concat(
@@ -70,16 +75,16 @@ def _intervals_df(conn, zcode, t0, t1):
     )
 
 
-def load_durations(zcode=None, start=None, end=None):
+def load_durations(zcode=None, start=None, end=None, stat_id=None):
     """충전기별 상태 카테고리 지속시간(초) 집계 DataFrame."""
     t1 = end or util.now_str()
     with db.get_conn() as conn:
-        meta = _meta_df(conn, zcode)
+        meta = _meta_df(conn, zcode, stat_id)
         if meta.empty:
             return pd.DataFrame()
         if start is None:
             start = _earliest(conn) or t1
-        iv = _intervals_df(conn, zcode, start, t1)
+        iv = _intervals_df(conn, zcode, start, t1, stat_id)
 
     if iv.empty:
         return pd.DataFrame()
@@ -159,6 +164,18 @@ def cpo_summary(charger_df, method="weighted"):
     out = g[["운영사(CPO)", "충전소수", "충전기수", "급속", "완속",
              "이용률", "장애율", "관측시간(h)"]]
     return out.sort_values("충전기수", ascending=False).reset_index(drop=True)
+
+
+def search_stations(term, limit=100):
+    """충전소명으로 전국 검색 (매칭만 조회 → 가벼움)."""
+    with db.get_conn() as conn:
+        df = db.fetch_df(
+            conn,
+            "SELECT stat_id, stat_nm, busi_nm, addr, zcode FROM stations "
+            "WHERE stat_nm LIKE ? ORDER BY stat_nm LIMIT ?",
+            [f"%{term}%", limit],
+        )
+    return df.rename(columns={"stat_nm": "충전소명", "busi_nm": "운영사", "addr": "주소"})
 
 
 def live_status(stat_id):

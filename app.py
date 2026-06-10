@@ -25,6 +25,43 @@ st.set_page_config(page_title="충전소 추정 이용률 분석", layout="wide"
 PCT = lambda label: st.column_config.ProgressColumn(label, format="%.1f%%", min_value=0, max_value=100)
 COLCFG = {"이용률": PCT("이용률"), "장애율": PCT("장애율")}
 
+
+def _status_color(v):
+    v = str(v)
+    if "충전중" in v:
+        return "background-color:#d6f5d6;color:#147a14"   # 초록
+    if v == "사용가능":
+        return "background-color:#dbe9ff;color:#1456c4"   # 파랑
+    return "background-color:#fde2e1;color:#c0392b"       # 빨강(장애 등)
+
+
+def render_station_detail(stat_id, agg_df=None):
+    """선택/검색한 충전소의 실시간 상태 + 기간 집계 표시 (탭 공용)."""
+    info, live = calculator.live_status(stat_id)
+    st.markdown(
+        f"**🔌 {info.get('stat_nm', '')}**　|　운영사 **{info.get('busi_nm', '')}**　|　📍 {info.get('addr', '')}")
+    if live is None or live.empty:
+        st.info("이 충전소의 실시간 상태 데이터가 아직 없습니다.")
+        return
+    sty = live.style
+    try:
+        sty = sty.map(_status_color, subset=["현재상태"])
+    except AttributeError:
+        sty = sty.applymap(_status_color, subset=["현재상태"])
+    st.dataframe(sty, width="stretch", hide_index=True)
+    st.caption("'충전중' 경과시간 = 현재시각 − 마지막 상태변경 시각(갱신일시). 수집 주기(10분)만큼 지연될 수 있음.")
+    with st.expander("📊 기간 집계 보기 (이용률·장애율)"):
+        if agg_df is not None and not agg_df.empty and (agg_df["stat_id"] == stat_id).any():
+            ch = agg_df[agg_df["stat_id"] == stat_id]
+        else:
+            ch = calculator.load_durations(stat_id=stat_id)
+        if ch is not None and not ch.empty:
+            detail = ch[["chger_id", "충전기구분", "output", "이용률", "장애율", "관측시간(h)"]].rename(
+                columns={"chger_id": "충전기ID", "output": "출력(kW)"})
+            st.dataframe(detail, width="stretch", hide_index=True, column_config=COLCFG)
+        else:
+            st.caption("기간 집계 데이터가 아직 없습니다.")
+
 st.title("⚡ 충전소 추정 이용률 분석")
 st.caption("한국환경공단 충전기 상태 데이터 · 상태 변경 이벤트 기반 시간 점유율(이용률·가동률)")
 
@@ -102,7 +139,32 @@ k[3].metric("평균 이용률", f"{chargers['이용률'].mean():.1f}%")
 k[4].metric("관측시간 합", f"{chargers['관측시간(h)'].sum():,.0f} h")
 
 st.divider()
-tab_cpo, tab_station, tab_map = st.tabs(["🏷️ 운영사(CPO) 비교", "🏢 충전소·충전기", "🗺️ 지도"])
+tab_search, tab_cpo, tab_station, tab_map = st.tabs(
+    ["🔍 충전소 검색", "🏷️ 운영사(CPO) 비교", "🏢 충전소·충전기", "🗺️ 지도"])
+
+# ===== 탭 0: 충전소 검색 (전국, 지역 무관) =====
+with tab_search:
+    st.subheader("충전소 이름으로 검색 (전국)")
+    term = st.text_input("충전소명 입력", placeholder="예: 반포써밋, 카페좋은날, 스타필드",
+                         key="search_term", label_visibility="collapsed")
+    if term and term.strip():
+        results = calculator.search_stations(term.strip())
+        if results.empty:
+            st.info(f"'{term}' 검색 결과가 없습니다.")
+        else:
+            st.caption(f"{len(results)}곳 검색됨(최대 100). 행을 클릭하면 실시간 상태가 표시됩니다.")
+            ev = st.dataframe(
+                results[["충전소명", "운영사", "주소"]],
+                width="stretch", hide_index=True,
+                on_select="rerun", selection_mode="single-row", key="search_table")
+            rsel = ev.selection.rows
+            if rsel:
+                st.divider()
+                render_station_detail(results.iloc[rsel[0]]["stat_id"])
+            else:
+                st.caption("⬆️ 위 목록에서 충전소를 클릭하세요.")
+    else:
+        st.caption("충전소 이름 일부를 입력하면 전국에서 찾습니다. (지역 선택 불필요)")
 
 # ===== 탭 1: CPO 비교 =====
 with tab_cpo:
@@ -139,32 +201,7 @@ with tab_station:
     sel_id = stations.iloc[sel_idx]["stat_id"]
 
     st.subheader("충전소 상세 — 실시간 충전기 상태")
-
-    info, live = calculator.live_status(sel_id)
-    st.markdown(
-        f"**🔌 {info['stat_nm']}**　|　운영사 **{info['busi_nm']}**　|　📍 {info['addr']}")
-
-    def _color(v):
-        v = str(v)
-        if "충전중" in v:
-            return "background-color:#d6f5d6;color:#147a14"   # 초록
-        if v == "사용가능":
-            return "background-color:#dbe9ff;color:#1456c4"   # 파랑
-        return "background-color:#fde2e1;color:#c0392b"       # 빨강(장애 등)
-
-    sty = live.style
-    try:
-        sty = sty.map(_color, subset=["현재상태"])
-    except AttributeError:
-        sty = sty.applymap(_color, subset=["현재상태"])
-    st.dataframe(sty, width="stretch", hide_index=True)
-    st.caption("‘충전중’ 경과시간 = 현재시각 − 마지막 상태변경 시각(갱신일시). 수집 주기(10분)만큼 지연될 수 있음.")
-
-    with st.expander("📊 기간 집계 보기 (이용률·장애율)"):
-        agg = chargers[chargers["stat_id"] == sel_id][
-            ["chger_id", "충전기구분", "output", "이용률", "장애율", "관측시간(h)"]
-        ].rename(columns={"chger_id": "충전기ID", "output": "출력(kW)"})
-        st.dataframe(agg, width="stretch", hide_index=True, column_config=COLCFG)
+    render_station_detail(sel_id, agg_df=chargers)
 
 # ===== 탭 3: 지도 =====
 with tab_map:
