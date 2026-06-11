@@ -5,9 +5,12 @@
 - current_state   : 각 충전기의 현재 상태 + 진입시각 (열린 구간)
 - state_intervals : 상태가 바뀔 때 닫힌 구간 기록 (시간 기반 이용률의 원천)
 """
+import json
 import os
 import sqlite3
 import time
+import urllib.error
+import urllib.request
 from contextlib import contextmanager
 
 import config
@@ -82,9 +85,9 @@ def _turso_url():
 
 
 class _TursoCursor:
-    def __init__(self, rs):
-        self._rows = [tuple(r) for r in rs.rows]
-        self.description = [(c,) for c in rs.columns] if rs.columns else None
+    def __init__(self, cols, rows):
+        self._rows = [tuple(r) for r in rows]
+        self.description = [(c,) for c in cols] if cols else None
 
     def fetchall(self):
         return self._rows
@@ -96,6 +99,64 @@ class _TursoCursor:
         return iter(self._rows)
 
 
+class _TursoHTTP:
+    """Turso HTTP API(v2/pipeline) 직접 호출 — libsql-client 호환성 문제 회피."""
+
+    def __init__(self, base_url, token):
+        self.url = base_url.rstrip("/") + "/v2/pipeline"
+        self.token = token
+
+    @staticmethod
+    def _to_arg(v):
+        if v is None:
+            return {"type": "null"}
+        if isinstance(v, bool):
+            return {"type": "integer", "value": str(int(v))}
+        if isinstance(v, int):
+            return {"type": "integer", "value": str(v)}
+        if isinstance(v, float):
+            return {"type": "float", "value": v}
+        return {"type": "text", "value": str(v)}
+
+    @staticmethod
+    def _from_cell(cell):
+        t = cell.get("type")
+        if t == "null":
+            return None
+        val = cell.get("value")
+        if t == "integer":
+            return int(val)
+        if t == "float":
+            return float(val)
+        return val
+
+    def _pipeline(self, exec_requests):
+        body = json.dumps({"requests": exec_requests + [{"type": "close"}]}).encode()
+        req = urllib.request.Request(self.url, data=body, method="POST")
+        req.add_header("Authorization", f"Bearer {self.token}")
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=config.HTTP_TIMEOUT) as r:
+            data = json.loads(r.read().decode())
+        for res in data.get("results", []):
+            if res.get("type") != "ok":
+                raise RuntimeError(f"Turso error: {res.get('error')}")
+        return data["results"]
+
+    def execute(self, sql, params):
+        reqs = [{"type": "execute",
+                 "stmt": {"sql": sql, "args": [self._to_arg(p) for p in params]}}]
+        result = self._pipeline(reqs)[0]["response"]["result"]
+        cols = [c["name"] for c in result["cols"]]
+        rows = [[self._from_cell(c) for c in row] for row in result["rows"]]
+        return cols, rows
+
+    def batch(self, statements):
+        reqs = [{"type": "execute",
+                 "stmt": {"sql": sql, "args": [self._to_arg(p) for p in params]}}
+                for sql, params in statements]
+        self._pipeline(reqs)
+
+
 class _TursoConn:
     """db.py가 쓰는 execute/executemany/commit 인터페이스만 구현."""
 
@@ -105,22 +166,24 @@ class _TursoConn:
         self._c = client
 
     def _retry(self, fn):
-        """Turso 일시 오류(502/503/504/timeout)에 재시도."""
+        """일시 오류(5xx/timeout/연결)에 재시도."""
         for attempt in range(config.MAX_RETRIES):
             try:
                 return fn()
-            except Exception as e:
-                msg = str(e).lower()
-                # libsql 일시 오류는 502/503/504 외에 KeyError/IndexError(응답 파싱)로도 나타남
-                transient = isinstance(e, (KeyError, IndexError)) or any(
-                    s in msg for s in ("502", "503", "504", "timeout", "server_error", "reset"))
-                if transient and attempt < config.MAX_RETRIES - 1:
+            except urllib.error.HTTPError as e:
+                if e.code in (429, 500, 502, 503, 504) and attempt < config.MAX_RETRIES - 1:
+                    time.sleep(config.RETRY_BACKOFF * (attempt + 1))
+                    continue
+                raise
+            except (urllib.error.URLError, TimeoutError):
+                if attempt < config.MAX_RETRIES - 1:
                     time.sleep(config.RETRY_BACKOFF * (attempt + 1))
                     continue
                 raise
 
     def execute(self, sql, params=()):
-        return _TursoCursor(self._retry(lambda: self._c.execute(sql, list(params))))
+        cols, rows = self._retry(lambda: self._c.execute(sql, list(params)))
+        return _TursoCursor(cols, rows)
 
     def executemany(self, sql, rows):
         rows = list(rows)
@@ -132,16 +195,16 @@ class _TursoConn:
         for stmt in script.split(";"):
             s = stmt.strip()
             if s:
-                self._c.execute(s)
+                self.execute(s)
 
     def commit(self):
-        pass  # libsql-client는 자동 커밋
+        pass
 
     def sync(self):
         pass
 
     def close(self):
-        self._c.close()
+        pass
 
 
 def init_db(path=None):
@@ -153,11 +216,8 @@ def init_db(path=None):
 def get_conn(path=None):
     # Turso(클라우드) 설정 시 호스팅 SQLite 사용, 아니면 로컬 파일
     if config.TURSO_DATABASE_URL:
-        import libsql_client
-        client = libsql_client.create_client_sync(
-            url=_turso_url(), auth_token=config.TURSO_AUTH_TOKEN)
-        conn = _TursoConn(client)
         # 스키마는 init_db에서만 적용 (연결마다 재적용은 불필요한 네트워크/실패지점)
+        conn = _TursoConn(_TursoHTTP(_turso_url(), config.TURSO_AUTH_TOKEN))
         try:
             yield conn
         finally:
