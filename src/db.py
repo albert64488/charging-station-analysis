@@ -68,8 +68,11 @@ CREATE INDEX IF NOT EXISTS idx_si_end        ON state_intervals(end_dt);
 
 
 def _apply_schema(conn):
-    """SQLite/libSQL 공통: 스키마 문장을 개별 실행."""
-    for stmt in SCHEMA.split(";"):
+    """스키마 문장 개별 실행 (Postgres는 AUTOINCREMENT→BIGSERIAL 변환)."""
+    schema = SCHEMA
+    if isinstance(conn, _PgConn):
+        schema = schema.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+    for stmt in schema.split(";"):
         s = stmt.strip()
         if s:
             conn.execute(s)
@@ -207,14 +210,57 @@ class _TursoConn:
         pass
 
 
+class _PgConn:
+    """psycopg(Postgres) 어댑터 — sqlite3 conn 인터페이스. ? → %s 변환."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    @staticmethod
+    def _q(sql):
+        return sql.replace("?", "%s")
+
+    def execute(self, sql, params=()):
+        cur = self._conn.cursor()
+        cur.execute(self._q(sql), tuple(params))
+        return cur  # psycopg 커서: fetchall/fetchone/description/iter 지원
+
+    def executemany(self, sql, rows):
+        cur = self._conn.cursor()
+        cur.executemany(self._q(sql), [tuple(r) for r in rows])
+        cur.close()
+
+    def commit(self):
+        self._conn.commit()
+
+    def sync(self):
+        pass
+
+    def close(self):
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+
 def init_db(path=None):
     with get_conn(path) as conn:
         _apply_schema(conn)
+        conn.commit()
 
 
 @contextmanager
 def get_conn(path=None):
     # Turso(클라우드) 설정 시 호스팅 SQLite 사용, 아니면 로컬 파일
+    if config.DATABASE_URL:  # Postgres(Neon 등) 최우선
+        import psycopg
+        conn = _PgConn(psycopg.connect(config.DATABASE_URL))
+        try:
+            yield conn
+        finally:
+            conn.close()
+        return
+
     if config.TURSO_DATABASE_URL:
         # 스키마는 init_db에서만 적용 (연결마다 재적용은 불필요한 네트워크/실패지점)
         conn = _TursoConn(_TursoHTTP(_turso_url(), config.TURSO_AUTH_TOKEN))
@@ -319,6 +365,11 @@ def insert_intervals(conn, rows):
         "INSERT INTO state_intervals (charger_key, stat, start_dt, end_dt) VALUES (?,?,?,?)",
         rows,
     )
+
+
+def prune_intervals(conn, cutoff):
+    """cutoff(ISO) 이전에 끝난 닫힌 구간 삭제 (무료 DB 저장공간 관리)."""
+    conn.execute("DELETE FROM state_intervals WHERE end_dt < ?", (cutoff,))
 
 
 def upsert_current_states(conn, rows):

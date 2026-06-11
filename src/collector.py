@@ -7,6 +7,8 @@
 상태가 바뀌면 직전 상태의 닫힌 구간(state_intervals)을 쌓고,
 새 상태를 current_state(열린 구간)로 갱신한다.
 """
+import datetime
+
 import config
 from src import api_client, db, sample_data, util
 
@@ -135,6 +137,8 @@ def refresh_full(zcode=None, zscode=None, use_sample=False):
         except Exception as e:
             failed.append(f"{z}({type(e).__name__})")
     with db.get_conn() as conn:
+        cutoff = (util.now_dt() - datetime.timedelta(days=35)).strftime(util.FMT)
+        db.prune_intervals(conn, cutoff)        # 35일 지난 구간 정리(저장공간)
         db.set_meta(conn, "last_refresh_at", updated_at)
         conn.commit()
         s = db.stats(conn)

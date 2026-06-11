@@ -16,7 +16,10 @@ MAX_RETRIES = int(os.getenv("MAX_RETRIES", "5"))          # 일시적 오류(504
 RETRY_BACKOFF = float(os.getenv("RETRY_BACKOFF", "3"))    # 재시도 대기 기본초(점증)
 DB_PATH = os.getenv("DB_PATH", "data/charging.db").strip()
 
-# Turso(호스팅 SQLite) — 설정 시 로컬 SQLite 대신 클라우드 DB 사용
+# Postgres(Neon 등) — 설정 시 최우선 사용
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+# Turso(호스팅 SQLite) — DATABASE_URL 없을 때 사용
 TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", "").strip()
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
 TURSO_REPLICA_PATH = os.getenv("TURSO_REPLICA_PATH", "data/replica.db").strip()

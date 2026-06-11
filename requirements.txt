@@ -3,4 +3,5 @@ requests>=2.31
 python-dotenv>=1.0
 pandas>=2.0
 streamlit>=1.35
+psycopg[binary]>=3.1
 # Turso는 HTTP API(v2/pipeline) 직접 호출 — 별도 클라이언트 불필요
