@@ -85,15 +85,20 @@ def load_durations(zcode=None, start=None, end=None, stat_id=None):
         meta = _meta_df(conn, zcode, stat_id)
         if meta.empty:
             return pd.DataFrame()
+        obs_start = _earliest(conn)
         if start is None:
-            start = _earliest(conn) or t1
+            start = obs_start or t1
         iv = _intervals_df(conn, zcode, start, t1, stat_id)
 
     if iv.empty:
         return pd.DataFrame()
 
     t0 = pd.to_datetime(start)
+    if obs_start:
+        t0 = max(t0, pd.to_datetime(obs_start))   # 관측 시작 이전은 데이터 없음
     t1d = pd.to_datetime(t1)
+    window_sec = max((t1d - t0).total_seconds(), 1.0)
+
     s = pd.to_datetime(iv["start_dt"]).clip(lower=t0)
     e = pd.to_datetime(iv["end_dt"]).clip(upper=t1d)
     iv["sec"] = (e - s).dt.total_seconds().clip(lower=0)
@@ -101,15 +106,15 @@ def load_durations(zcode=None, start=None, end=None, stat_id=None):
     iv["fault"] = iv["stat"].isin(config.FAULT_STATES) * iv["sec"]
 
     g = iv.groupby("charger_key").agg(
-        total_sec=("sec", "sum"),
         charging_sec=("charging", "sum"),
         fault_sec=("fault", "sum"),
     ).reset_index()
-    g = g[g["total_sec"] > 0]
+    # 관측시간 = 분석창 전체 길이(충전기 공통) = "우리가 지켜본 기간"
+    g["total_sec"] = window_sec
 
     df = g.merge(meta, on="charger_key", how="left")
-    df["이용률"] = (df["charging_sec"] / df["total_sec"] * 100).round(2)
-    df["장애율"] = (df["fault_sec"] / df["total_sec"] * 100).round(2)
+    df["이용률"] = (df["charging_sec"] / df["total_sec"] * 100).clip(upper=100).round(2)
+    df["장애율"] = (df["fault_sec"] / df["total_sec"] * 100).clip(upper=100).round(2)
     df["충전시간(h)"] = (df["charging_sec"] / 3600).round(1)
     df["관측시간(h)"] = (df["total_sec"] / 3600).round(1)
     df["충전기구분"] = df["is_fast"].map({1: "급속", 0: "완속"})
