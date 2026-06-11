@@ -173,13 +173,14 @@ def cpo_summary(charger_df, method="weighted"):
 
 
 def search_stations(term, limit=100):
-    """충전소명으로 전국 검색 (매칭만 조회 → 가벼움)."""
+    """충전소명 또는 주소로 전국 검색 (매칭만 조회 → 가벼움)."""
+    like = f"%{term}%"
     with db.get_conn() as conn:
         df = db.fetch_df(
             conn,
             "SELECT stat_id, stat_nm, busi_nm, addr, zcode FROM stations "
-            "WHERE stat_nm LIKE ? ORDER BY stat_nm LIMIT ?",
-            [f"%{term}%", limit],
+            "WHERE stat_nm LIKE ? OR addr LIKE ? ORDER BY stat_nm LIMIT ?",
+            [like, like, limit],
         )
     return df.rename(columns={"stat_nm": "충전소명", "busi_nm": "운영사", "addr": "주소"})
 

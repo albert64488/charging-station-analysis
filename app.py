@@ -174,8 +174,8 @@ tab_search, tab_cpo, tab_station, tab_map = st.tabs(
 
 # ===== 탭 0: 충전소 검색 (전국, 지역 무관) =====
 with tab_search:
-    st.subheader("충전소 이름으로 검색 (전국)")
-    term = st.text_input("충전소명 입력", placeholder="예: 반포써밋, 카페좋은날, 스타필드",
+    st.subheader("충전소 이름·주소로 검색 (전국)")
+    term = st.text_input("충전소명/주소 입력", placeholder="예: 반포써밋, 강동구 명일로, 스타필드",
                          key="search_term", label_visibility="collapsed")
     if term and term.strip():
         results = calculator.search_stations(term.strip())
@@ -194,7 +194,8 @@ with tab_search:
             else:
                 st.caption("⬆️ 위 목록에서 충전소를 클릭하세요.")
     else:
-        st.caption("충전소 이름 일부를 입력하면 전국에서 찾습니다. (지역 선택 불필요)")
+        st.caption("충전소 이름 또는 주소 일부를 입력하면 전국에서 찾습니다. "
+                   "(플랫폼마다 충전소명이 다를 수 있어 주소로 찾는 게 정확할 때가 많아요)")
 
 # ===== 탭 1: CPO 비교 =====
 with tab_cpo:
