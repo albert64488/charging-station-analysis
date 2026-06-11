@@ -50,6 +50,7 @@ jobs:
       - name: 수집 실행 (${{ steps.m.outputs.mode }})
         env:
           DATAGO_SERVICE_KEY: ${{ secrets.DATAGO_SERVICE_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
         run: python run_collect.py ${{ steps.m.outputs.mode }} --nationwide
