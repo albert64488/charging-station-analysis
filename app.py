@@ -76,7 +76,10 @@ def render_station_detail(stat_id, agg_df=None):
 st.title("⚡ 충전소 추정 이용률 분석")
 st.caption("한국환경공단 충전기 상태 데이터 · 상태 변경 이벤트 기반 시간 이용률")
 
-db.init_db()
+try:
+    db.init_db()  # Turso엔 스키마 이미 존재 — 일시 오류로 앱 시작이 막히지 않게
+except Exception:
+    pass
 
 
 @st.cache_data(ttl=300)

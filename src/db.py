@@ -111,8 +111,9 @@ class _TursoConn:
                 return fn()
             except Exception as e:
                 msg = str(e).lower()
-                transient = any(s in msg for s in
-                                ("502", "503", "504", "timeout", "server_error", "reset"))
+                # libsql 일시 오류는 502/503/504 외에 KeyError/IndexError(응답 파싱)로도 나타남
+                transient = isinstance(e, (KeyError, IndexError)) or any(
+                    s in msg for s in ("502", "503", "504", "timeout", "server_error", "reset"))
                 if transient and attempt < config.MAX_RETRIES - 1:
                     time.sleep(config.RETRY_BACKOFF * (attempt + 1))
                     continue
@@ -144,8 +145,8 @@ class _TursoConn:
 
 
 def init_db(path=None):
-    with get_conn(path):
-        pass
+    with get_conn(path) as conn:
+        _apply_schema(conn)
 
 
 @contextmanager
@@ -156,7 +157,7 @@ def get_conn(path=None):
         client = libsql_client.create_client_sync(
             url=_turso_url(), auth_token=config.TURSO_AUTH_TOKEN)
         conn = _TursoConn(client)
-        _apply_schema(conn)
+        # 스키마는 init_db에서만 적용 (연결마다 재적용은 불필요한 네트워크/실패지점)
         try:
             yield conn
         finally:
