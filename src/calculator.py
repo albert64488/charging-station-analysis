@@ -110,6 +110,7 @@ def load_durations(zcode=None, start=None, end=None, stat_id=None):
     df = g.merge(meta, on="charger_key", how="left")
     df["이용률"] = (df["charging_sec"] / df["total_sec"] * 100).round(2)
     df["장애율"] = (df["fault_sec"] / df["total_sec"] * 100).round(2)
+    df["충전시간(h)"] = (df["charging_sec"] / 3600).round(1)
     df["관측시간(h)"] = (df["total_sec"] / 3600).round(1)
     df["충전기구분"] = df["is_fast"].map({1: "급속", 0: "완속"})
     return df
@@ -127,6 +128,7 @@ def _agg_rates(charger_df, key, method):
         장애율=("장애율", "mean"),
         충전기수=("charger_key", "size"),
         급속=("is_fast", "sum"),
+        충전시간=("충전시간(h)", "mean"),   # 충전기 1대당 평균 충전시간
         관측시간=("관측시간(h)", "mean"),   # 충전기 1대당 평균 관측시간
     )
     if method == "weighted":
@@ -139,6 +141,7 @@ def _agg_rates(charger_df, key, method):
     g["완속"] = (g["충전기수"] - g["급속"]).astype(int)
     g["이용률"] = g["이용률"].round(2)
     g["장애율"] = g["장애율"].round(2)
+    g["충전시간(h)"] = g["충전시간"].round(1)
     g["관측시간(h)"] = g["관측시간"].round(1)
     return g
 
@@ -152,7 +155,7 @@ def station_summary(charger_df, method="weighted"):
         충전소명=("stat_nm", "first"), 운영사=("busi_nm", "first"))
     g = g.join(names).reset_index()
     out = g[["stat_id", "충전소명", "운영사", "이용률", "장애율",
-             "충전기수", "급속", "완속", "관측시간(h)"]]
+             "충전기수", "급속", "완속", "충전시간(h)", "관측시간(h)"]]
     return out.sort_values("이용률", ascending=False).reset_index(drop=True)
 
 
@@ -165,7 +168,7 @@ def cpo_summary(charger_df, method="weighted"):
     g = g.join(nst).reset_index().rename(columns={"busi_nm": "운영사(CPO)"})
     g["운영사(CPO)"] = g["운영사(CPO)"].replace("", "(미상)").fillna("(미상)")
     out = g[["운영사(CPO)", "충전소수", "충전기수", "급속", "완속",
-             "이용률", "장애율", "관측시간(h)"]]
+             "이용률", "장애율", "충전시간(h)", "관측시간(h)"]]
     return out.sort_values("충전기수", ascending=False).reset_index(drop=True)
 
 

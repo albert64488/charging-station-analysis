@@ -48,12 +48,13 @@ def render_station_detail(stat_id, agg_df=None):
         ch = calculator.load_durations(stat_id=stat_id)
 
     if ch is not None and not ch.empty:
-        m = st.columns(4)
+        m = st.columns(5)
         m[0].metric("평균 이용률", f"{ch['이용률'].mean():.1f}%")
         m[1].metric("충전기 수", f"{len(ch)}")
         m[2].metric("급속 / 완속",
                     f"{int((ch['is_fast'] == 1).sum())} / {int((ch['is_fast'] == 0).sum())}")
-        m[3].metric("관측시간(충전기당)", f"{ch['관측시간(h)'].mean():.0f} h")
+        m[3].metric("충전시간(충전기당)", f"{ch['충전시간(h)'].mean():.0f} h")
+        m[4].metric("관측시간(충전기당)", f"{ch['관측시간(h)'].mean():.0f} h")
 
     st.markdown("**실시간 충전기 상태**")
     if live is None or live.empty:
@@ -69,7 +70,8 @@ def render_station_detail(stat_id, agg_df=None):
 
     if ch is not None and not ch.empty:
         with st.expander("📊 충전기별 이용률·장애율"):
-            detail = ch[["chger_id", "충전기구분", "output", "이용률", "장애율", "관측시간(h)"]].rename(
+            detail = ch[["chger_id", "충전기구분", "output", "이용률", "장애율",
+                         "충전시간(h)", "관측시간(h)"]].rename(
                 columns={"chger_id": "충전기ID", "output": "출력(kW)"})
             st.dataframe(detail, width="stretch", hide_index=True, column_config=COLCFG)
 
@@ -220,7 +222,7 @@ with tab_station:
     st.subheader("충전소별 이용률")
     st.caption("👉 행을 클릭하면 아래에 해당 충전소의 실시간 충전기 상태가 표시됩니다.")
     _event = st.dataframe(
-        stations[["충전소명", "운영사", "이용률", "장애율", "충전기수", "급속", "완속", "관측시간(h)"]],
+        stations[["충전소명", "운영사", "이용률", "장애율", "충전기수", "급속", "완속", "충전시간(h)", "관측시간(h)"]],
         width="stretch", hide_index=True, column_config=COLCFG,
         on_select="rerun", selection_mode="single-row", key="station_table",
     )
