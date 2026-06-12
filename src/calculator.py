@@ -10,6 +10,7 @@
 충전소 이용률은 출력(kW) 가중평균(권장) 또는 단순평균.
 """
 import datetime
+import math
 
 import numpy as np
 import pandas as pd
@@ -18,7 +19,7 @@ import config
 from src import db, util
 
 
-def _meta_df(conn, zcode=None, stat_id=None):
+def _meta_df(conn, zcode=None, stat_id=None, stat_ids=None):
     sql = """
         SELECT c.charger_key, c.stat_id, c.chger_id, c.is_fast, c.output, c.busi_nm,
                s.stat_nm, s.lat, s.lng, s.zcode
@@ -32,6 +33,9 @@ def _meta_df(conn, zcode=None, stat_id=None):
     if stat_id:
         sql += " AND s.stat_id = ?"
         params.append(stat_id)
+    if stat_ids:
+        sql += " AND s.stat_id IN (%s)" % ",".join("?" * len(stat_ids))
+        params.extend(stat_ids)
     return db.fetch_df(conn, sql, params)
 
 
@@ -49,10 +53,13 @@ def _earliest(conn):
     return min(vals) if vals else None
 
 
-def _intervals_df(conn, zcode, t0, t1, stat_id=None):
+def _intervals_df(conn, zcode, t0, t1, stat_id=None, stat_ids=None):
     """[t0,t1]과 겹치는 닫힌 구간 + 현재 열린 구간 (지역/충전소 필터는 SQL에서)."""
     filt = (" AND s.zcode = ?" if zcode else "") + (" AND s.stat_id = ?" if stat_id else "")
     extra = ([str(zcode)] if zcode else []) + ([stat_id] if stat_id else [])
+    if stat_ids:
+        filt += " AND s.stat_id IN (%s)" % ",".join("?" * len(stat_ids))
+        extra = extra + list(stat_ids)
     closed = db.fetch_df(
         conn,
         "SELECT i.charger_key, i.stat, i.start_dt, i.end_dt "
@@ -78,17 +85,17 @@ def _intervals_df(conn, zcode, t0, t1, stat_id=None):
     )
 
 
-def load_durations(zcode=None, start=None, end=None, stat_id=None):
+def load_durations(zcode=None, start=None, end=None, stat_id=None, stat_ids=None):
     """충전기별 상태 카테고리 지속시간(초) 집계 DataFrame."""
     t1 = end or util.now_str()
     with db.get_conn() as conn:
-        meta = _meta_df(conn, zcode, stat_id)
+        meta = _meta_df(conn, zcode, stat_id, stat_ids)
         if meta.empty:
             return pd.DataFrame()
         obs_start = _earliest(conn)
         if start is None:
             start = obs_start or t1
-        iv = _intervals_df(conn, zcode, start, t1, stat_id)
+        iv = _intervals_df(conn, zcode, start, t1, stat_id, stat_ids)
 
     if iv.empty:
         return pd.DataFrame()
@@ -188,6 +195,43 @@ def search_stations(term, limit=100):
             [like, like, limit],
         )
     return df.rename(columns={"stat_nm": "충전소명", "busi_nm": "운영사", "addr": "주소"})
+
+
+def nearby_stations(stat_id, radius_km=3.0):
+    """선택 충전소 반경 radius_km 내 충전소 + 거리 + 이용률. (중심좌표, DataFrame) 반환."""
+    with db.get_conn() as conn:
+        c = db.fetch_df(conn, "SELECT lat, lng FROM stations WHERE stat_id = ?", [stat_id])
+        if c.empty or pd.isna(c["lat"].iloc[0]) or pd.isna(c["lng"].iloc[0]):
+            return None, pd.DataFrame()
+        clat, clng = float(c["lat"].iloc[0]), float(c["lng"].iloc[0])
+        dlat = radius_km / 111.0
+        dlng = radius_km / (111.0 * max(math.cos(math.radians(clat)), 0.01))
+        cand = db.fetch_df(
+            conn,
+            "SELECT stat_id, stat_nm, busi_nm, addr, lat, lng FROM stations "
+            "WHERE lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?",
+            [clat - dlat, clat + dlat, clng - dlng, clng + dlng],
+        )
+    if cand.empty:
+        return (clat, clng), pd.DataFrame()
+
+    lat2 = np.radians(cand["lat"].astype(float))
+    lng2 = np.radians(cand["lng"].astype(float))
+    lat1, lng1 = math.radians(clat), math.radians(clng)
+    a = (np.sin((lat2 - lat1) / 2) ** 2
+         + math.cos(lat1) * np.cos(lat2) * np.sin((lng2 - lng1) / 2) ** 2)
+    cand["거리(km)"] = (6371.0 * 2 * np.arcsin(np.sqrt(a))).round(2)
+    cand = cand[cand["거리(km)"] <= radius_km].copy()
+    if cand.empty:
+        return (clat, clng), pd.DataFrame()
+
+    ch = load_durations(stat_ids=cand["stat_id"].tolist())
+    cols = ["stat_id", "이용률", "장애율", "충전기수", "급속", "완속"]
+    summ = station_summary(ch)[cols] if not ch.empty else pd.DataFrame(columns=cols)
+    out = cand.merge(summ, on="stat_id", how="left").rename(
+        columns={"stat_nm": "충전소명", "busi_nm": "운영사", "addr": "주소",
+                 "lat": "latitude", "lng": "longitude"})
+    return (clat, clng), out.sort_values("거리(km)").reset_index(drop=True)
 
 
 def live_status(stat_id):
