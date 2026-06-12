@@ -76,41 +76,41 @@ def render_station_detail(stat_id, agg_df=None, key_prefix=""):
                 columns={"chger_id": "충전기ID", "output": "출력(kW)"})
             st.dataframe(detail, width="stretch", hide_index=True, column_config=COLCFG)
 
-    # 📍 반경 입지 분석
+    # 📍 반경 입지 분석 (체크 시에만 계산 — 밀집지역은 무거움)
     st.divider()
-    st.markdown("**📍 주변 입지 분석** — 반경 내 경쟁 충전소 이용률")
-    radius = st.slider("반경(km)", 1.0, 5.0, 3.0, 0.5, key=f"{key_prefix}_radius")
-    center, near = _nearby(stat_id, radius)
-    if center is None:
-        st.caption("이 충전소의 위치 정보가 없어 주변 분석을 할 수 없어요.")
-    elif near.empty:
-        st.caption(f"반경 {radius}km 내 충전소가 없습니다.")
-    else:
-        n = st.columns(4)
-        n[0].metric("반경 내 충전소", f"{len(near)}곳")
-        n[1].metric("평균 이용률",
-                    f"{near['이용률'].mean():.1f}%" if near['이용률'].notna().any() else "-")
-        n[2].metric("운영사 수", f"{near['운영사'].nunique()}")
-        n[3].metric("급속 / 완속",
-                    f"{int(near['급속'].fillna(0).sum())} / {int(near['완속'].fillna(0).sum())}")
-        nm = near.copy()
-        nm["이용률"] = nm["이용률"].fillna(0)
-        nm["color"] = nm["이용률"].apply(
-            lambda u: [int(255 * min(u, 100) / 100), int(200 * (1 - min(u, 100) / 100)), 90, 200])
-        layer = pdk.Layer("ScatterplotLayer", data=nm, get_position=["longitude", "latitude"],
-                          get_fill_color="color", get_radius=130, pickable=True)
-        ctr = pdk.Layer("ScatterplotLayer",
-                        data=pd.DataFrame([{"longitude": center[1], "latitude": center[0]}]),
-                        get_position=["longitude", "latitude"],
-                        get_fill_color=[0, 90, 255, 255], get_radius=200)
-        st.pydeck_chart(pdk.Deck(
-            layers=[layer, ctr],
-            initial_view_state=pdk.ViewState(latitude=center[0], longitude=center[1], zoom=13),
-            tooltip={"text": "{충전소명}\n이용률 {이용률}%"}))
-        st.caption("🔵 검색한 충전소 · 점 색상: 🔴 이용률 높음 → 🟢 낮음")
-        st.dataframe(
-            near[["충전소명", "운영사", "거리(km)", "이용률", "장애율", "충전기수", "급속", "완속"]],
-            width="stretch", hide_index=True, column_config=COLCFG)
+    if st.checkbox("📍 주변 입지 분석 보기 (반경 내 경쟁 충전소 지도)", key=f"{key_prefix}_show"):
+        radius = st.slider("반경(km)", 1.0, 5.0, 3.0, 0.5, key=f"{key_prefix}_radius")
+        center, near = _nearby(stat_id, radius)
+        if center is None:
+            st.caption("이 충전소의 위치 정보가 없어 주변 분석을 할 수 없어요.")
+        elif near.empty:
+            st.caption(f"반경 {radius}km 내 충전소가 없습니다.")
+        else:
+            n = st.columns(4)
+            n[0].metric("반경 내 충전소", f"{len(near)}곳")
+            n[1].metric("평균 이용률",
+                        f"{near['이용률'].mean():.1f}%" if near['이용률'].notna().any() else "-")
+            n[2].metric("운영사 수", f"{near['운영사'].nunique()}")
+            n[3].metric("급속 / 완속",
+                        f"{int(near['급속'].fillna(0).sum())} / {int(near['완속'].fillna(0).sum())}")
+            nm = near.copy()
+            nm["이용률"] = nm["이용률"].fillna(0)
+            nm["color"] = nm["이용률"].apply(
+                lambda u: [int(255 * min(u, 100) / 100), int(200 * (1 - min(u, 100) / 100)), 90, 200])
+            layer = pdk.Layer("ScatterplotLayer", data=nm, get_position=["longitude", "latitude"],
+                              get_fill_color="color", get_radius=130, pickable=True)
+            ctr = pdk.Layer("ScatterplotLayer",
+                            data=pd.DataFrame([{"longitude": center[1], "latitude": center[0]}]),
+                            get_position=["longitude", "latitude"],
+                            get_fill_color=[0, 90, 255, 255], get_radius=200)
+            st.pydeck_chart(pdk.Deck(
+                layers=[layer, ctr],
+                initial_view_state=pdk.ViewState(latitude=center[0], longitude=center[1], zoom=13),
+                tooltip={"text": "{충전소명}\n이용률 {이용률}%"}))
+            st.caption("🔵 검색한 충전소 · 점 색상: 🔴 이용률 높음 → 🟢 낮음")
+            st.dataframe(
+                near[["충전소명", "운영사", "거리(km)", "이용률", "장애율", "충전기수", "급속", "완속"]],
+                width="stretch", hide_index=True, column_config=COLCFG)
 
 
 @st.cache_data(ttl=300, show_spinner="주변 충전소 분석 중…")
