@@ -1,11 +1,12 @@
-"""수집 로직 (이벤트 기반).
+"""수집 로직 (집계 기반).
 
-- refresh_full() : getChargerInfo 전수 → 메타 upsert + 현재상태 시드/보정
-- poll_changes() : getChargerStatus 델타 → 상태 변경분만 구간 기록
-- seed_sample()  : API 키 없이 검증용 샘플 상태구간 생성
+- refresh_full() : getChargerInfo 전수 → 메타 신규 + 현재상태 보정 + 누적 카운터 갱신
+- poll_changes() : getChargerStatus 델타 → 변경분만 카운터 갱신
+- seed_sample()  : API 키 없이 검증용 샘플
 
-상태가 바뀌면 직전 상태의 닫힌 구간(state_intervals)을 쌓고,
-새 상태를 current_state(열린 구간)로 갱신한다.
+원시 구간(state_intervals)을 저장하지 않고, 상태가 끝날 때마다 그 지속시간을
+충전기별 누적 카운터(charger_stats: charging_sec/fault_sec)에 더한다(관측시작 기준 클립).
+→ 저장량이 충전기 수만큼 고정(안 늘어남). 이용률 = (누적 + 현재진행분) / 관측창.
 """
 import datetime
 
@@ -25,6 +26,19 @@ def _to_stat(v):
         return int(str(v).strip())
     except (TypeError, ValueError):
         return 9
+
+
+def _dur_sec(start_iso, end_iso, floor_iso=None):
+    """[start,end] 지속시간(초). floor 이전은 제외(관측창 클립). ISO 문자열은 사전식=시간순."""
+    s = max(start_iso, floor_iso) if floor_iso else start_iso
+    if not end_iso or end_iso <= s:
+        return 0.0
+    try:
+        d = (datetime.datetime.strptime(end_iso, util.FMT)
+             - datetime.datetime.strptime(s, util.FMT)).total_seconds()
+        return max(0.0, d)
+    except ValueError:
+        return 0.0
 
 
 def _meta_rows(item, updated_at):
@@ -49,25 +63,38 @@ def _meta_rows(item, updated_at):
     return station_row, charger_row, charger_key
 
 
-def _apply_change(current, charger_key, new_stat, change_dt, intervals, state_rows, updated_at):
-    """current_state와 비교해 변경 시 닫힌 구간 적립 + 새 상태 준비.
+def _apply_change(current, stats, key, new_stat, change_dt, obs_start, state_rows, updated_at):
+    """변경 시 직전 상태의 지속시간을 누적 카운터에 더하고 현재상태 갱신.
 
-    current: {charger_key: (stat, since_dt)} (in-memory, 호출 중 갱신)
+    current: {key: (stat, since_dt)} · stats: {key: [charging_sec, fault_sec]} (in-memory 갱신)
     """
-    prev = current.get(charger_key)
+    prev = current.get(key)
     if prev is None:
-        current[charger_key] = (new_stat, change_dt)
-        state_rows.append((charger_key, new_stat, change_dt, change_dt, updated_at))
+        current[key] = (new_stat, change_dt)
+        stats.setdefault(key, [0.0, 0.0])
+        state_rows.append((key, new_stat, change_dt, change_dt, updated_at))
         return
     prev_stat, prev_since = prev
     # 같은 상태 + 진입시각이 더 최신도 아님 → 진짜 변화 없음
     if prev_stat == new_stat and change_dt <= prev_since:
         return
-    # 상태변경 OR 같은상태지만 statUpdDt가 더 최신(놓친 재진입) → 구간 닫고 새로 시작
     end_dt = change_dt if change_dt >= prev_since else prev_since
-    intervals.append((charger_key, prev_stat, prev_since, end_dt))
-    current[charger_key] = (new_stat, change_dt)
-    state_rows.append((charger_key, new_stat, change_dt, change_dt, updated_at))
+    dur = _dur_sec(prev_since, end_dt, obs_start)
+    st = stats.setdefault(key, [0.0, 0.0])
+    if prev_stat in config.CHARGING_STATES:
+        st[0] += dur
+    elif prev_stat in config.FAULT_STATES:
+        st[1] += dur
+    current[key] = (new_stat, change_dt)
+    state_rows.append((key, new_stat, change_dt, change_dt, updated_at))
+
+
+def _get_obs_start(conn, updated_at):
+    obs = db.get_meta(conn, "observation_start_at")
+    if not obs:
+        obs = updated_at
+        db.set_meta(conn, "observation_start_at", obs)
+    return obs
 
 
 # 전국 시·도 지역코드 (전수 refresh를 지역별로 분할 → API 504에 견고)
@@ -75,8 +102,8 @@ ZCODES_ALL = ["11", "26", "27", "28", "29", "30", "31", "36", "41",
               "43", "44", "46", "47", "48", "50", "51", "52"]
 
 
-def _refresh_region(zcode, zscode, updated_at):
-    """한 지역 전수 조회 → 메타 신규분 + 현재상태 변경분 기록 (지역별 커밋)."""
+def _refresh_region(zcode, zscode, updated_at, obs_start):
+    """한 지역 전수 조회 → 메타 신규 + 현재상태/누적카운터 갱신 (지역별 커밋)."""
     items = api_client.fetch_charger_info(zcode=zcode, zscode=zscode)
 
     station_rows, charger_rows, changes = {}, [], []
@@ -100,25 +127,28 @@ def _refresh_region(zcode, zscode, updated_at):
         db.upsert_chargers(conn, new_chargers)
 
         current = db.load_current_states(conn, keys)
-        intervals, state_rows = [], []
+        stats = db.load_stats(conn, keys)
+        state_rows = []
         for key, stat, change_dt in changes:
-            _apply_change(current, key, stat, change_dt, intervals, state_rows, updated_at)
-        db.insert_intervals(conn, intervals)
+            _apply_change(current, stats, key, stat, change_dt, obs_start, state_rows, updated_at)
+        changed = [r[0] for r in state_rows]
         db.upsert_current_states(conn, state_rows)
+        db.upsert_stats(conn, [(k, stats[k][0], stats[k][1]) for k in changed])
         conn.commit()
-    return {"fetched": len(changes), "new_meta": len(new_chargers),
-            "new_intervals": len(intervals)}
+    return {"fetched": len(changes), "new_meta": len(new_chargers), "changed": len(state_rows)}
 
 
 def refresh_full(zcode=None, zscode=None, use_sample=False):
-    """전수 조회로 메타 갱신 + 현재상태 보정. 전국이면 시·도별로 분할 수행."""
+    """전수 조회로 메타 갱신 + 현재상태/카운터 보정. 전국이면 시·도별로 분할."""
     if use_sample or not config.DATAGO_SERVICE_KEY:
         return seed_sample()
     updated_at = util.now_str()
+    with db.get_conn() as conn:
+        obs_start = _get_obs_start(conn, updated_at)
+        conn.commit()
 
-    # 특정 지역 지정 시 단일 수행
     if zcode or zscode:
-        res = _refresh_region(zcode, zscode, updated_at)
+        res = _refresh_region(zcode, zscode, updated_at, obs_start)
         with db.get_conn() as conn:
             db.set_meta(conn, "last_refresh_at", updated_at)
             conn.commit()
@@ -126,19 +156,16 @@ def refresh_full(zcode=None, zscode=None, use_sample=False):
         res.update({"source": "api", "op": "refresh", "failed": []})
         return res
 
-    # 전국: 시·도별 순회 (한 지역 실패해도 나머지는 저장)
-    agg = {"fetched": 0, "new_meta": 0, "new_intervals": 0}
+    agg = {"fetched": 0, "new_meta": 0, "changed": 0}
     failed = []
     for z in ZCODES_ALL:
         try:
-            r = _refresh_region(z, None, updated_at)
+            r = _refresh_region(z, None, updated_at, obs_start)
             for k in agg:
                 agg[k] += r[k]
         except Exception as e:
             failed.append(f"{z}({type(e).__name__})")
     with db.get_conn() as conn:
-        cutoff = (util.now_dt() - datetime.timedelta(days=35)).strftime(util.FMT)
-        db.prune_intervals(conn, cutoff)        # 35일 지난 구간 정리(저장공간)
         db.set_meta(conn, "last_refresh_at", updated_at)
         conn.commit()
         s = db.stats(conn)
@@ -146,20 +173,19 @@ def refresh_full(zcode=None, zscode=None, use_sample=False):
 
 
 def poll_changes(period=10, zcode=None, zscode=None):
-    """델타 조회로 변경분만 구간 기록. 메타에 없는 충전기는 다음 refresh까지 보류."""
+    """델타 조회로 변경분만 카운터 갱신. 메타에 없는 충전기는 다음 refresh까지 보류."""
     if not config.DATAGO_SERVICE_KEY:
-        raise RuntimeError("실데이터 폴링에는 API 키가 필요합니다. 샘플은 seed_sample 사용.")
+        raise RuntimeError("실데이터 폴링에는 API 키가 필요합니다.")
     items = api_client.fetch_charger_status(period=period, zcode=zcode, zscode=zscode)
     updated_at = util.now_str()
-
-    # 변경분의 charger_key만 추려 그 범위만 DB 조회 (전체 51만 읽기 방지)
     poll_keys = [f"{it.get('statId')}-{it.get('chgerId')}"
                  for it in items if it.get("statId") and it.get("chgerId")]
 
     with db.get_conn() as conn:
-        # current_state에 있으면 곧 메타도 있는 충전기 → 별도 known 조회 생략(왕복 절감)
+        obs_start = _get_obs_start(conn, updated_at)
         current = db.load_current_states(conn, poll_keys)
-        intervals, state_rows = [], []
+        stats = db.load_stats(conn, poll_keys)
+        state_rows = []
         skipped = 0
         for item in items:
             stat_id, chger_id = item.get("statId"), item.get("chgerId")
@@ -167,41 +193,42 @@ def poll_changes(period=10, zcode=None, zscode=None):
                 continue
             key = f"{stat_id}-{chger_id}"
             if key not in current:
-                skipped += 1  # 아직 현재상태 없음 → 다음 refresh_full에서 편입
+                skipped += 1  # 아직 현재상태 없음 → 다음 refresh에서 편입
                 continue
             stat = _to_stat(item.get("stat"))
             change_dt = util.parse_stat_dt(item.get("statUpdDt"), default=updated_at)
-            _apply_change(current, key, stat, change_dt, intervals, state_rows, updated_at)
-        db.insert_intervals(conn, intervals)
+            _apply_change(current, stats, key, stat, change_dt, obs_start, state_rows, updated_at)
+        changed = [r[0] for r in state_rows]
         db.upsert_current_states(conn, state_rows)
-        if not db.get_meta(conn, "observation_start_at"):
-            db.set_meta(conn, "observation_start_at", updated_at)
+        db.upsert_stats(conn, [(k, stats[k][0], stats[k][1]) for k in changed])
         db.set_meta(conn, "last_poll_at", updated_at)
         conn.commit()
         s = db.stats(conn)
     return {"source": "api", "op": "poll", "period": period, "fetched": len(items),
-            "changed": len(intervals), "skipped_unknown": skipped, "stats": s}
+            "changed": len(state_rows), "skipped_unknown": skipped, "stats": s}
 
 
 def seed_sample(days=7):
-    """샘플 메타 + 상태구간 생성 (오프라인 검증용)."""
+    """샘플 메타 + 현재상태 + 누적 카운터 생성 (오프라인 검증용)."""
     updated_at = util.now_str()
-    station_rows, charger_rows, intervals, state_rows = [], [], [], []
+    station_rows, charger_rows, state_rows, stat_rows = [], [], [], []
     for srow, crow, key, ivs, (cur_stat, cur_since) in sample_data.generate_event_history(days, updated_at):
         station_rows.append(srow)
         charger_rows.append(crow)
-        intervals.extend(ivs)
         state_rows.append((key, cur_stat, cur_since, cur_since, updated_at))
+        ch = sum(_dur_sec(s, e) for (_k, st, s, e) in ivs if st in config.CHARGING_STATES)
+        fa = sum(_dur_sec(s, e) for (_k, st, s, e) in ivs if st in config.FAULT_STATES)
+        stat_rows.append((key, ch, fa))
 
     with db.get_conn() as conn:
-        # 중복 방지: 샘플 재시드 시 기존 샘플 구간 제거
-        conn.execute("DELETE FROM state_intervals WHERE charger_key LIKE 'SMPL%'")
-        conn.execute("DELETE FROM current_state   WHERE charger_key LIKE 'SMPL%'")
-        db.upsert_stations(conn, {r[0]: r for r in station_rows}.values())
+        conn.execute("DELETE FROM current_state WHERE charger_key LIKE 'SMPL%'")
+        conn.execute("DELETE FROM charger_stats WHERE charger_key LIKE 'SMPL%'")
+        db.upsert_stations(conn, list({r[0]: r for r in station_rows}.values()))
         db.upsert_chargers(conn, charger_rows)
-        db.insert_intervals(conn, intervals)
         db.upsert_current_states(conn, state_rows)
+        db.upsert_stats(conn, stat_rows)
+        db.set_meta(conn, "observation_start_at",
+                    (util.now_dt() - datetime.timedelta(days=days)).strftime(util.FMT))
         conn.commit()
         s = db.stats(conn)
-    return {"source": "sample", "op": "seed", "chargers": len(charger_rows),
-            "new_intervals": len(intervals), "stats": s}
+    return {"source": "sample", "op": "seed", "chargers": len(charger_rows), "stats": s}

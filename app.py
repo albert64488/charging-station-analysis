@@ -134,11 +134,7 @@ def _filters():
             "SELECT DISTINCT zcode FROM stations WHERE zcode IS NOT NULL AND zcode <> '' ORDER BY zcode")]
         dmin = db.get_meta(conn, "observation_start_at")
         if not dmin:
-            dmin = conn.execute(
-                "SELECT MIN(d) FROM ("
-                "  SELECT MIN(start_dt) d FROM state_intervals"
-                "  UNION ALL SELECT MIN(since_dt) d FROM current_state)"
-            ).fetchone()[0]
+            dmin = conn.execute("SELECT MIN(since_dt) FROM current_state").fetchone()[0]
     return zcodes, dmin
 
 

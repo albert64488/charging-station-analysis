@@ -1,12 +1,11 @@
-"""시간(지속구간) 기반 이용률/가동률 산정.
+"""시간 기반 이용률/장애율 산정 (집계 카운터 방식).
 
-정의 (이벤트 기반):
+정의:
 - 이용률 = 충전중 시간 ÷ 전체 관측시간 × 100
-- 가동률 = (사용가능 + 충전중) 시간 ÷ 전체 관측시간 × 100
 - 장애율 = (통신이상 + 운영중지 + 점검중 + 미확인) 시간 ÷ 전체 관측시간 × 100
 
-각 충전기의 상태구간(state_intervals)과 현재 열린 상태(current_state)를
-분석 구간 [start, end]로 잘라(clip) 지속시간을 합산한다.
+충전중/장애 시간은 충전기별 누적 카운터(charger_stats)에 현재 열린 상태
+(current_state)의 진행분을 더해 구한다. 관측창 = 수집시작(observation_start_at)~지금.
 충전소 이용률은 출력(kW) 가중평균(권장) 또는 단순평균.
 """
 import datetime
@@ -19,13 +18,30 @@ import config
 from src import db, util
 
 
-def _meta_df(conn, zcode=None, stat_id=None, stat_ids=None):
-    sql = """
-        SELECT c.charger_key, c.stat_id, c.chger_id, c.is_fast, c.output, c.busi_nm,
-               s.stat_nm, s.lat, s.lng, s.zcode
-        FROM chargers c JOIN stations s ON c.stat_id = s.stat_id
-        WHERE 1=1
+def _earliest(conn):
+    """관측 시작 기준점 = 수집 시작 시각(observation_start_at)."""
+    obs = db.get_meta(conn, "observation_start_at")
+    if obs:
+        return obs
+    return conn.execute("SELECT MIN(since_dt) FROM current_state").fetchone()[0]
+
+
+def load_durations(zcode=None, start=None, end=None, stat_id=None, stat_ids=None):
+    """충전기별 이용률·장애율·충전시간 (누적 카운터 + 현재 진행분).
+
+    이용률 = (누적 충전시간 + 현재 충전 진행분) / 관측창(수집시작~지금).
     """
+    t1 = end or util.now_str()
+    sql = (
+        "SELECT c.charger_key, c.stat_id, c.chger_id, c.is_fast, c.output, c.busi_nm, "
+        "s.stat_nm, s.lat, s.lng, s.zcode, cs.stat, cs.since_dt, "
+        "COALESCE(st.charging_sec,0) AS charging_sec, COALESCE(st.fault_sec,0) AS fault_sec "
+        "FROM chargers c "
+        "JOIN stations s ON c.stat_id = s.stat_id "
+        "JOIN current_state cs ON c.charger_key = cs.charger_key "
+        "LEFT JOIN charger_stats st ON c.charger_key = st.charger_key "
+        "WHERE 1=1"
+    )
     params = []
     if zcode:
         sql += " AND s.zcode = ?"
@@ -36,94 +52,25 @@ def _meta_df(conn, zcode=None, stat_id=None, stat_ids=None):
     if stat_ids:
         sql += " AND s.stat_id IN (%s)" % ",".join("?" * len(stat_ids))
         params.extend(stat_ids)
-    return db.fetch_df(conn, sql, params)
 
-
-def _earliest(conn):
-    """관측 시작 기준점 = 수집 시작 시각(observation_start_at). 없으면 가장 이른 구간."""
-    obs = db.get_meta(conn, "observation_start_at")
-    if obs:
-        return obs
-    vals = []
-    for q in ("SELECT MIN(start_dt) FROM state_intervals",
-              "SELECT MIN(since_dt) FROM current_state"):
-        v = conn.execute(q).fetchone()[0]
-        if v:
-            vals.append(v)
-    return min(vals) if vals else None
-
-
-def _intervals_df(conn, zcode, t0, t1, stat_id=None, stat_ids=None):
-    """[t0,t1]과 겹치는 닫힌 구간 + 현재 열린 구간 (지역/충전소 필터는 SQL에서)."""
-    filt = (" AND s.zcode = ?" if zcode else "") + (" AND s.stat_id = ?" if stat_id else "")
-    extra = ([str(zcode)] if zcode else []) + ([stat_id] if stat_id else [])
-    if stat_ids:
-        filt += " AND s.stat_id IN (%s)" % ",".join("?" * len(stat_ids))
-        extra = extra + list(stat_ids)
-    closed = db.fetch_df(
-        conn,
-        "SELECT i.charger_key, i.stat, i.start_dt, i.end_dt "
-        "FROM state_intervals i "
-        "JOIN chargers c ON i.charger_key = c.charger_key "
-        "JOIN stations s ON c.stat_id = s.stat_id "
-        "WHERE i.end_dt >= ? AND i.start_dt <= ?" + filt,
-        [t0, t1] + extra,
-    )
-    open_ = db.fetch_df(
-        conn,
-        "SELECT cs.charger_key, cs.stat, cs.since_dt AS start_dt "
-        "FROM current_state cs "
-        "JOIN chargers c ON cs.charger_key = c.charger_key "
-        "JOIN stations s ON c.stat_id = s.stat_id "
-        "WHERE cs.since_dt <= ?" + filt,
-        [t1] + extra,
-    )
-    open_["end_dt"] = t1  # 열린 구간 끝 = 분석구간 끝
-    return pd.concat(
-        [closed, open_[["charger_key", "stat", "start_dt", "end_dt"]]],
-        ignore_index=True,
-    )
-
-
-def load_durations(zcode=None, start=None, end=None, stat_id=None, stat_ids=None):
-    """충전기별 상태 카테고리 지속시간(초) 집계 DataFrame."""
-    t1 = end or util.now_str()
     with db.get_conn() as conn:
-        meta = _meta_df(conn, zcode, stat_id, stat_ids)
-        if meta.empty:
-            return pd.DataFrame()
         obs_start = _earliest(conn)
-        if start is None:
-            start = obs_start or t1
-        iv = _intervals_df(conn, zcode, start, t1, stat_id, stat_ids)
+        df = db.fetch_df(conn, sql, params)
+    if df.empty:
+        return df
 
-    if iv.empty:
-        return pd.DataFrame()
-
-    t0 = pd.to_datetime(start)
-    if obs_start:
-        t0 = max(t0, pd.to_datetime(obs_start))   # 관측 시작 이전은 데이터 없음
     t1d = pd.to_datetime(t1)
-    window_sec = max((t1d - t0).total_seconds(), 1.0)
+    obs = pd.to_datetime(obs_start) if obs_start else t1d
+    window = max((t1d - obs).total_seconds(), 1.0)
+    since = pd.to_datetime(df["since_dt"]).clip(lower=obs)
+    open_dur = (t1d - since).dt.total_seconds().clip(lower=0)
+    charging = df["charging_sec"].fillna(0) + open_dur.where(df["stat"] == 3, 0.0)
+    fault = df["fault_sec"].fillna(0) + open_dur.where(df["stat"].isin(config.FAULT_STATES), 0.0)
 
-    s = pd.to_datetime(iv["start_dt"]).clip(lower=t0)
-    e = pd.to_datetime(iv["end_dt"]).clip(upper=t1d)
-    iv["sec"] = (e - s).dt.total_seconds().clip(lower=0)
-    iv["charging"] = iv["stat"].isin(config.CHARGING_STATES) * iv["sec"]
-    iv["fault"] = iv["stat"].isin(config.FAULT_STATES) * iv["sec"]
-
-    g = iv.groupby("charger_key").agg(
-        charging_sec=("charging", "sum"),
-        fault_sec=("fault", "sum"),
-    ).reset_index()
-    # 관측시간 = 분석창 전체 길이(충전기 공통) = "우리가 지켜본 기간"
-    g["total_sec"] = window_sec
-
-    df = g.merge(meta, on="charger_key", how="left")
-    df["이용률"] = (df["charging_sec"] / df["total_sec"] * 100).clip(upper=100).round(2)
-    df["장애율"] = (df["fault_sec"] / df["total_sec"] * 100).clip(upper=100).round(2)
-    df["충전시간(h)"] = (df["charging_sec"] / 3600).round(1)
-    df["관측시간(h)"] = (df["total_sec"] / 3600).round(1)
+    df["이용률"] = (charging / window * 100).clip(0, 100).round(2)
+    df["장애율"] = (fault / window * 100).clip(0, 100).round(2)
+    df["충전시간(h)"] = (charging / 3600).round(1)
+    df["관측시간(h)"] = round(window / 3600, 1)
     df["충전기구분"] = df["is_fast"].map({1: "급속", 0: "완속"})
     return df
 

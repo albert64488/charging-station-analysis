@@ -1,9 +1,9 @@
-"""SQLite 스키마 및 저장 헬퍼 (이벤트 기반 v2).
+"""SQLite 스키마 및 저장 헬퍼 (집계 기반 v3).
 
-- stations        : 충전소 메타 (위치/사업자)
-- chargers        : 충전기 메타 (타입/출력/급속여부)
-- current_state   : 각 충전기의 현재 상태 + 진입시각 (열린 구간)
-- state_intervals : 상태가 바뀔 때 닫힌 구간 기록 (시간 기반 이용률의 원천)
+- stations      : 충전소 메타 (위치/사업자)
+- chargers      : 충전기 메타 (타입/출력/급속여부)
+- current_state : 각 충전기의 현재 상태 + 진입시각 (열린 구간)
+- charger_stats : 충전기별 누적 충전/장애 시간(초) 카운터 (저장량 고정)
 """
 import json
 import os
@@ -47,12 +47,11 @@ CREATE TABLE IF NOT EXISTS current_state (
     updated_at  TEXT
 );
 
-CREATE TABLE IF NOT EXISTS state_intervals (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    charger_key TEXT,
-    stat        INTEGER,
-    start_dt    TEXT,
-    end_dt      TEXT
+-- 집계 저장: 충전기별 누적 충전/장애 시간(초). 514k행 고정, 안 늘어남.
+CREATE TABLE IF NOT EXISTS charger_stats (
+    charger_key  TEXT PRIMARY KEY,
+    charging_sec REAL DEFAULT 0,
+    fault_sec    REAL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -61,9 +60,6 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chargers_stat ON chargers(stat_id);
-CREATE INDEX IF NOT EXISTS idx_si_charger    ON state_intervals(charger_key);
-CREATE INDEX IF NOT EXISTS idx_si_start      ON state_intervals(start_dt);
-CREATE INDEX IF NOT EXISTS idx_si_end        ON state_intervals(end_dt);
 """
 
 
@@ -359,17 +355,27 @@ def known_station_ids(conn, ids=None):
         conn, "SELECT stat_id FROM stations WHERE stat_id IN ({ph})", ids)}
 
 
-def insert_intervals(conn, rows):
-    """rows: (charger_key, stat, start_dt, end_dt)"""
+def load_stats(conn, keys=None):
+    """{charger_key: [charging_sec, fault_sec]} 누적 카운터."""
+    if keys is None:
+        rows = conn.execute("SELECT charger_key, charging_sec, fault_sec FROM charger_stats").fetchall()
+    else:
+        rows = _chunked_in(
+            conn, "SELECT charger_key, charging_sec, fault_sec FROM charger_stats WHERE charger_key IN ({ph})", keys)
+    return {r[0]: [float(r[1] or 0), float(r[2] or 0)] for r in rows}
+
+
+def upsert_stats(conn, rows):
+    """rows: (charger_key, charging_sec, fault_sec) — 누적 총량으로 갱신."""
     conn.executemany(
-        "INSERT INTO state_intervals (charger_key, stat, start_dt, end_dt) VALUES (?,?,?,?)",
+        """
+        INSERT INTO charger_stats (charger_key, charging_sec, fault_sec)
+        VALUES (?,?,?)
+        ON CONFLICT(charger_key) DO UPDATE SET
+            charging_sec=excluded.charging_sec, fault_sec=excluded.fault_sec
+        """,
         rows,
     )
-
-
-def prune_intervals(conn, cutoff):
-    """cutoff(ISO) 이전에 끝난 닫힌 구간 삭제 (무료 DB 저장공간 관리)."""
-    conn.execute("DELETE FROM state_intervals WHERE end_dt < ?", (cutoff,))
 
 
 def upsert_current_states(conn, rows):
@@ -406,5 +412,5 @@ def stats(conn):
         "stations": one("SELECT COUNT(*) FROM stations"),
         "chargers": one("SELECT COUNT(*) FROM chargers"),
         "current_state": one("SELECT COUNT(*) FROM current_state"),
-        "intervals": one("SELECT COUNT(*) FROM state_intervals"),
+        "stats": one("SELECT COUNT(*) FROM charger_stats"),
     }
