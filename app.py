@@ -227,7 +227,8 @@ with tab_search:
                 width="stretch", hide_index=True,
                 on_select="rerun", selection_mode="single-row", key="search_table")
             rsel = ev.selection.rows
-            if rsel:
+            # 검색어가 바뀌면 위젯 선택상태가 남아 이전 행 인덱스가 범위를 벗어날 수 있음 → 방어
+            if rsel and rsel[0] < len(results):
                 st.divider()
                 render_station_detail(results.iloc[rsel[0]]["stat_id"], key_prefix="search")
             else:
@@ -267,11 +268,12 @@ with tab_station:
         on_select="rerun", selection_mode="single-row", key="station_table",
     )
     _rows = _event.selection.rows
-    sel_idx = _rows[0] if _rows else 0
-    sel_id = stations.iloc[sel_idx]["stat_id"]
-
-    st.subheader("충전소 상세 — 실시간 충전기 상태")
-    render_station_detail(sel_id, agg_df=chargers, key_prefix="station")
+    if len(stations):
+        # 지역/필터가 바뀌면 위젯 선택상태가 남아 범위를 벗어날 수 있음 → 0으로 방어
+        sel_idx = _rows[0] if (_rows and _rows[0] < len(stations)) else 0
+        sel_id = stations.iloc[sel_idx]["stat_id"]
+        st.subheader("충전소 상세 — 실시간 충전기 상태")
+        render_station_detail(sel_id, agg_df=chargers, key_prefix="station")
 
 # ===== 탭 3: 지도 =====
 with tab_map:
