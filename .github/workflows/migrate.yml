@@ -1,0 +1,31 @@
+name: migrate
+
+# 일회성 마이그레이션: state_intervals 삭제(용량 회수) → charger_stats 생성 → 관측창 리셋.
+# 수동 실행 전용. 운영 Neon DB(DATABASE_URL 시크릿)에 대해 동작.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: collect          # collect 와 동시 실행 방지
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements-collect.txt
+
+      - name: 집계 방식 마이그레이션
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: python scripts/migrate_aggregate.py
