@@ -40,7 +40,7 @@ def main():
         zcode, zscode = _region(args)
         r = collector.refresh_full(zcode=zcode, zscode=zscode)
         msg = (f"[refresh] source={r['source']} 조회 {r.get('fetched','?')}건 / "
-               f"신규메타 {r.get('new_meta', 0)} / 신규구간 {r['new_intervals']}")
+               f"신규메타 {r.get('new_meta', 0)} / 상태변경 {r.get('changed', 0)}")
         if r.get("failed"):
             msg += f" / 실패지역 {r['failed']}"
         print(msg)
@@ -51,11 +51,11 @@ def main():
               f"미편입(메타없음) {r['skipped_unknown']}")
     elif args.cmd == "seed-sample":
         r = collector.seed_sample(days=args.days)
-        print(f"[seed-sample] 충전기 {r['chargers']} / 신규구간 {r['new_intervals']}")
+        print(f"[seed-sample] 충전기 {r['chargers']}")
 
     s = r["stats"]
     print(f"[현황] 충전소 {s['stations']} / 충전기 {s['chargers']} / "
-          f"현재상태 {s['current_state']} / 누적구간 {s['intervals']}")
+          f"현재상태 {s['current_state']} / 누적카운터 {s['stats']}")
 
 
 if __name__ == "__main__":
