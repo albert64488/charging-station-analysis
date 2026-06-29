@@ -245,12 +245,24 @@ def init_db(path=None):
         conn.commit()
 
 
+def _pg_connect():
+    """Neon은 미사용 시 자동 정지(autosuspend) → 콜드 스타트 연결 실패를 재시도."""
+    import psycopg
+    last = None
+    for attempt in range(max(config.MAX_RETRIES, 1)):
+        try:
+            return psycopg.connect(config.DATABASE_URL, connect_timeout=15)
+        except psycopg.OperationalError as e:
+            last = e
+            time.sleep(min(2.0 * (attempt + 1), 6.0))
+    raise last
+
+
 @contextmanager
 def get_conn(path=None):
     # Turso(클라우드) 설정 시 호스팅 SQLite 사용, 아니면 로컬 파일
     if config.DATABASE_URL:  # Postgres(Neon 등) 최우선
-        import psycopg
-        conn = _PgConn(psycopg.connect(config.DATABASE_URL))
+        conn = _PgConn(_pg_connect())
         try:
             yield conn
         finally:
