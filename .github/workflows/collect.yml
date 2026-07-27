@@ -17,6 +17,10 @@ concurrency:
   group: collect
   cancel-in-progress: false
 
+# 스냅샷을 Release 자산으로 발행하려면 contents:write 필요
+permissions:
+  contents: write
+
 jobs:
   collect:
     runs-on: ubuntu-latest
@@ -34,17 +38,25 @@ jobs:
       - name: 모드 결정
         id: m
         run: |
+          M=$(date -u +%M)
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            echo "mode=refresh" >> "$GITHUB_OUTPUT"
+            MODE=refresh
           else
             # cron-job.org 트리거(workflow_dispatch). 기본 poll,
             # 단 UTC 0/6/12/18시의 0~9분 트리거는 refresh로 전환(하루 4회 빈틈 보정).
-            H=$(date -u +%H); M=$(date -u +%M)
+            H=$(date -u +%H)
             if [ "$M" -lt 10 ] && [ $((10#$H % 6)) -eq 0 ]; then
-              echo "mode=refresh" >> "$GITHUB_OUTPUT"
+              MODE=refresh
             else
-              echo "mode=${{ github.event.inputs.mode }}" >> "$GITHUB_OUTPUT"
+              MODE=${{ github.event.inputs.mode }}
             fi
+          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          # 스냅샷 발행: refresh는 항상, poll은 ~30분마다(:00·:30 트리거)만 → Neon 부하 절감
+          if [ "$MODE" = "refresh" ] || [ $((10#$M % 30)) -lt 10 ]; then
+            echo "snapshot=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "snapshot=0" >> "$GITHUB_OUTPUT"
           fi
 
       - name: 수집 실행 (${{ steps.m.outputs.mode }})
@@ -54,3 +66,23 @@ jobs:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
         run: python run_collect.py ${{ steps.m.outputs.mode }} --nationwide
+
+      # ---- 정적 스냅샷 빌드·발행 (앱이 읽는 데이터) ----
+      - name: 스냅샷 빌드 (station_stats 부분합 + 원본 복사)
+        if: steps.m.outputs.snapshot == '1'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python scripts/build_snapshot.py --out snapshot.db
+          python -c "import sqlite3;print(sqlite3.connect('snapshot.db').execute(\"SELECT value FROM meta WHERE key='snapshot_at'\").fetchone()[0])" > snapshot.txt
+          cat snapshot.txt
+
+      - name: Release 자산으로 발행 (latest-data)
+        if: steps.m.outputs.snapshot == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view latest-data >/dev/null 2>&1 || \
+            gh release create latest-data --title "latest-data" \
+              --notes "앱이 읽는 자동 발행 스냅샷 (수집기가 갱신)" --prerelease
+          gh release upload latest-data snapshot.db.gz snapshot.txt --clobber

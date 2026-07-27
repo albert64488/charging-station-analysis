@@ -1,5 +1,8 @@
-# 수집 전용(GitHub Actions) — 대시보드 의존성 제외로 가볍게
+# 수집 + 스냅샷 발행(GitHub Actions)
 requests>=2.31
 python-dotenv>=1.0
 psycopg[binary]>=3.1
+# 스냅샷 빌드(build_snapshot.py)용 — station_stats 부분합 집계
+pandas>=2.0
+numpy>=1.24
 # Turso는 HTTP API 직접 호출 — 별도 클라이언트 불필요

@@ -1,28 +1,19 @@
-"""공유용 Streamlit 대시보드 — 시간(지속구간) 기반 이용률/가동률.
+"""공유용 Streamlit 대시보드 — 정적 스냅샷(집계 부분합) 기반 이용률/장애율.
+
+앱은 라이브 DB를 보지 않는다. 수집기가 발행한 스냅샷(snapshot.db)을 내려받아 읽는다.
+→ DB 다운/콜드스타트/용량 문제로부터 앱이 분리됨. 전국 집계도 부분합이라 가볍다.
 
 실행:  streamlit run app.py
+로컬:  SNAPSHOT_DB=data/snapshot.db streamlit run app.py
 """
-import datetime
-import os
-
 import pandas as pd
-import pydeck as pdk
 import streamlit as st
 
-# Streamlit Cloud: secrets → 환경변수 (config가 env에서 읽도록). config import 前에 설정.
-for _k in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "DATAGO_SERVICE_KEY"):
-    try:
-        if _k in st.secrets:
-            os.environ.setdefault(_k, str(st.secrets[_k]))
-    except Exception:
-        pass
-
 import config
-from src import calculator, db
+from src import calculator, db, snapshot
 
 st.set_page_config(page_title="충전소 추정 이용률 분석", layout="wide")
 
-# 이용률/가동률을 막대 게이지로 보여주기 위한 컬럼 설정
 PCT = lambda label: st.column_config.ProgressColumn(label, format="%.1f%%", min_value=0, max_value=100)
 COLCFG = {"이용률": PCT("이용률"), "장애율": PCT("장애율")}
 
@@ -36,18 +27,15 @@ def _status_color(v):
     return "background-color:#fde2e1;color:#c0392b"       # 빨강(장애 등)
 
 
-def render_station_detail(stat_id, agg_df=None, key_prefix=""):
+def render_station_detail(stat_id, key_prefix=""):
     """선택/검색한 충전소의 이용률 + 실시간 상태 + 반경 입지분석 (탭 공용)."""
+    import pydeck as pdk
+
     info, live = calculator.live_status(stat_id)
     st.markdown(
         f"**🔌 {info.get('stat_nm', '')}**　|　운영사 **{info.get('busi_nm', '')}**　|　📍 {info.get('addr', '')}")
 
-    # 이 충전소의 기간 이용률 (충전기별)
-    if agg_df is not None and not agg_df.empty and (agg_df["stat_id"] == stat_id).any():
-        ch = agg_df[agg_df["stat_id"] == stat_id]
-    else:
-        ch = calculator.load_durations(stat_id=stat_id)
-
+    ch = calculator.load_durations(stat_id=stat_id)
     if ch is not None and not ch.empty:
         m = st.columns(5)
         m[0].metric("평균 이용률", f"{ch['이용률'].mean():.1f}%")
@@ -118,94 +106,90 @@ def _nearby(stat_id, radius):
     return calculator.nearby_stations(stat_id, radius)
 
 
+# ---------------- 스냅샷 준비 (라이브 DB 미사용) ----------------
+@st.cache_data(ttl=600, show_spinner="스냅샷 불러오는 중…")
+def _snapshot():
+    """최대 10분마다 최신 스냅샷 확인·다운로드. (경로, 생성시각) 반환."""
+    return snapshot.ensure()
+
+
 st.title("⚡ 충전소 추정 이용률 분석")
 st.caption("한국환경공단 충전기 상태 데이터 · 상태 변경 이벤트 기반 시간 이용률")
 
 try:
-    db.init_db()  # Turso엔 스키마 이미 존재 — 일시 오류로 앱 시작이 막히지 않게
-except Exception:
-    pass
+    snap_path, snap_at = _snapshot()
+except snapshot.SnapshotUnavailable as e:
+    st.warning("아직 스냅샷이 발행되지 않았어요. 수집기가 첫 스냅샷을 올리면 표시됩니다.\n\n"
+               f"({e})")
+    st.stop()
+snapshot._use(snap_path)  # 매 rerun마다 config를 로컬 스냅샷으로 고정
 
 
-@st.cache_data(ttl=300)
-def _filters():
+@st.cache_data(ttl=600)
+def _zcodes(_at):
     with db.get_conn() as conn:
-        zcodes = [r[0] for r in conn.execute(
-            "SELECT DISTINCT zcode FROM stations WHERE zcode IS NOT NULL AND zcode <> '' ORDER BY zcode")]
-        dmin = db.get_meta(conn, "observation_start_at")
-        if not dmin:
-            dmin = conn.execute("SELECT MIN(since_dt) FROM current_state").fetchone()[0]
-    return zcodes, dmin
+        return [r[0] for r in conn.execute(
+            "SELECT DISTINCT zcode FROM station_stats "
+            "WHERE zcode IS NOT NULL AND zcode <> '' ORDER BY zcode")]
 
 
-@st.cache_data(ttl=300, show_spinner="데이터 불러오는 중… (전국은 최초 1회 30~40초 소요)")
-def _load(zcode, start, end):
-    return calculator.load_durations(zcode=zcode, start=start, end=end)
+@st.cache_data(ttl=600, show_spinner="집계 불러오는 중…")
+def _load_partials(zcode, _at):
+    return calculator.load_partials(zcode)
 
 
-@st.cache_data(ttl=60)
-def _last_collected():
-    with db.get_conn() as conn:
-        return db.get_meta(conn, "last_poll_at"), db.get_meta(conn, "last_refresh_at")
-
-
-zcodes, dmin = _filters()
-if not zcodes or not dmin:
-    st.warning("수집된 데이터가 없습니다. 먼저 터미널에서 실행하세요:\n\n"
-               "`python run_collect.py seed-sample --days 7`  (샘플)\n\n"
-               "`python run_collect.py refresh` → `python run_collect.py poll`  (실데이터)")
+zcodes = _zcodes(snap_at)
+if not zcodes:
+    st.warning("스냅샷에 집계 데이터가 없습니다.")
     st.stop()
 
-_poll_at, _refresh_at = _last_collected()
-st.caption(
-    f"🕐 마지막 수집(poll): **{_poll_at or '아직 없음'}** · "
-    f"마지막 전수보정(refresh): {_refresh_at or '아직 없음'}　"
-    f"(KST · 10분마다 자동 수집)")
+st.caption(f"🕐 스냅샷 생성: **{snap_at or '알 수 없음'}** (KST · 약 10분마다 갱신)")
 
 # ---------------- 사이드바 필터 ----------------
 with st.sidebar:
     st.header("🔎 필터")
-    # 전국 통합 보기는 메모리 과다(51만 행)로 임시 비활성화 → 지역별 제공
-    zopts = {f"{config.zcode_name(z)} ({z})": z for z in zcodes}
-    zcode = zopts[st.selectbox("지역", list(zopts.keys()))]
-    st.caption("ℹ️ 전국 통합 보기는 성능 최적화 작업 중이라 현재 지역별로 제공됩니다.")
+    # 전국 통합 + 시도별 (전국도 부분합이라 가볍게 처리)
+    zopts = {"🇰🇷 전국 통합": None}
+    zopts.update({f"{config.zcode_name(z)} ({z})": z for z in zcodes})
+    zsel = st.selectbox("지역", list(zopts.keys()))
+    zcode = zopts[zsel]
 
-    dmin_d = pd.to_datetime(dmin).date()
-    today = datetime.date.today()
-    drange = st.date_input("기간", value=(dmin_d, today), min_value=dmin_d, max_value=today)
-    d0, d1 = drange if isinstance(drange, tuple) and len(drange) == 2 else (drange, drange)
-    start_s, end_s = f"{d0} 00:00:00", f"{d1} 23:59:59"
-
-    chargers_all = _load(zcode, start_s, end_s)
-    cpo_opts = sorted(chargers_all["busi_nm"].dropna().replace("", pd.NA).dropna().unique()) \
-        if not chargers_all.empty else []
+    part_all = _load_partials(zcode, snap_at)
+    cpo_opts = sorted(part_all["busi_nm"].dropna().replace("", pd.NA).dropna().unique()) \
+        if not part_all.empty else []
     sel_cpos = st.multiselect("운영사 (CPO)", cpo_opts, placeholder="전체 (선택 시 해당 CPO만)")
 
     type_sel = st.radio("충전기 구분", ["전체", "급속", "완속"], horizontal=True)
     method = "weighted" if st.radio("충전소·CPO 집계", ["출력 가중평균 (권장)", "단순평균"]).startswith("출력") else "simple"
 
 # ---------------- 필터 적용 ----------------
-chargers = chargers_all.copy()
-if not chargers.empty:
+part = part_all
+if not part.empty:
     if sel_cpos:
-        chargers = chargers[chargers["busi_nm"].isin(sel_cpos)]
-    if type_sel != "전체":
-        chargers = chargers[chargers["충전기구분"] == type_sel]
+        part = part[part["busi_nm"].isin(sel_cpos)]
+    part_cpo = part.copy()          # 타입 필터 전 (급속/완속 비교용)
+    if type_sel == "급속":
+        part = part[part["is_fast"] == 1]
+    elif type_sel == "완속":
+        part = part[part["is_fast"] == 0]
+else:
+    part_cpo = part
 
-if chargers.empty:
+if part.empty:
     st.info("선택한 조건에 해당하는 데이터가 없습니다. 필터를 조정해 주세요.")
     st.stop()
 
-stations = calculator.station_summary(chargers, method=method)
-cpos = calculator.cpo_summary(chargers, method=method)
+stations = calculator.summarize_stations(part, method=method)
+cpos = calculator.summarize_cpos(part, method=method)
+kpi = calculator.kpi_from_partials(part, method=method)
 
 # ---------------- 상단 KPI ----------------
 k = st.columns(5)
-k[0].metric("충전소 수", f"{stations['충전소명'].nunique():,}")
-k[1].metric("충전기 수", f"{len(chargers):,}")
-k[2].metric("운영사 수", f"{chargers['busi_nm'].nunique():,}")
-k[3].metric("평균 이용률", f"{chargers['이용률'].mean():.1f}%")
-k[4].metric("관측시간(충전기당)", f"{chargers['관측시간(h)'].mean():,.0f} h")
+k[0].metric("충전소 수", f"{kpi['충전소수']:,}")
+k[1].metric("충전기 수", f"{kpi['충전기수']:,}")
+k[2].metric("운영사 수", f"{kpi['운영사수']:,}")
+k[3].metric("평균 이용률", f"{kpi['평균이용률']:.1f}%")
+k[4].metric("관측시간(충전기당)", f"{kpi['관측시간']:,.0f} h")
 
 st.divider()
 tab_search, tab_cpo, tab_station, tab_map = st.tabs(
@@ -227,7 +211,6 @@ with tab_search:
                 width="stretch", hide_index=True,
                 on_select="rerun", selection_mode="single-row", key="search_table")
             rsel = ev.selection.rows
-            # 검색어가 바뀌면 위젯 선택상태가 남아 이전 행 인덱스가 범위를 벗어날 수 있음 → 방어
             if rsel and rsel[0] < len(results):
                 st.divider()
                 render_station_detail(results.iloc[rsel[0]]["stat_id"], key_prefix="search")
@@ -242,9 +225,7 @@ with tab_cpo:
     c1, c2 = st.columns([3, 2])
     with c1:
         st.subheader("운영사별 운영현황")
-        st.dataframe(
-            cpos, width="stretch", hide_index=True, column_config=COLCFG,
-        )
+        st.dataframe(cpos, width="stretch", hide_index=True, column_config=COLCFG)
     with c2:
         st.subheader("CPO 이용률 비교")
         top = cpos.sort_values("이용률", ascending=False).head(12).set_index("운영사(CPO)")
@@ -253,7 +234,7 @@ with tab_cpo:
     bt[0].subheader("CPO별 충전기 규모")
     bt[0].bar_chart(cpos.sort_values("충전기수", ascending=False).head(12).set_index("운영사(CPO)")["충전기수"])
     bt[1].subheader("급속 vs 완속 평균 이용률")
-    by_type = chargers.groupby("충전기구분")["이용률"].mean().round(1)
+    by_type = calculator.type_util(part_cpo, method=method)
     m = bt[1].columns(2)
     m[0].metric("급속", f"{by_type.get('급속', float('nan')):.1f}%")
     m[1].metric("완속", f"{by_type.get('완속', float('nan')):.1f}%")
@@ -269,17 +250,16 @@ with tab_station:
     )
     _rows = _event.selection.rows
     if len(stations):
-        # 지역/필터가 바뀌면 위젯 선택상태가 남아 범위를 벗어날 수 있음 → 0으로 방어
         sel_idx = _rows[0] if (_rows and _rows[0] < len(stations)) else 0
         sel_id = stations.iloc[sel_idx]["stat_id"]
         st.subheader("충전소 상세 — 실시간 충전기 상태")
-        render_station_detail(sel_id, agg_df=chargers, key_prefix="station")
+        render_station_detail(sel_id, key_prefix="station")
 
 # ===== 탭 3: 지도 =====
 with tab_map:
     st.subheader("충전소 위치")
     MAX_PTS = 5000
-    geo = chargers[["stat_id", "lat", "lng"]].dropna().drop_duplicates("stat_id")
+    geo = stations[["stat_id", "lat", "lng"]].dropna().drop_duplicates("stat_id")
     geo = geo.rename(columns={"lat": "latitude", "lng": "longitude"})
     if not geo.empty:
         if len(geo) > MAX_PTS:

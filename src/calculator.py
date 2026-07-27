@@ -134,6 +134,116 @@ def cpo_summary(charger_df, method="weighted"):
     return out.sort_values("충전기수", ascending=False).reset_index(drop=True)
 
 
+# ---------------------------------------------------------------------------
+# 스냅샷(station_stats 부분합) 기반 요약 — 510k행 로드 없이 전국/지역 집계
+# ---------------------------------------------------------------------------
+# station_stats 각 행 = (충전소, 급속/완속, 운영사)의 가산 부분합.
+# 임의 그룹(전국/지역/CPO/타입)을 '합산'만으로 정확히 재구성한다.
+
+def load_partials(zcode=None, cpos=None):
+    """station_stats 부분합을 지역(zcode)·운영사(cpos) 필터로 조회."""
+    sql = "SELECT * FROM station_stats WHERE 1=1"
+    params = []
+    if zcode:
+        sql += " AND zcode = ?"
+        params.append(str(zcode))
+    if cpos:
+        sql += " AND busi_nm IN (%s)" % ",".join("?" * len(cpos))
+        params.extend(cpos)
+    with db.get_conn() as conn:
+        return db.fetch_df(conn, sql, params)
+
+
+def _reagg(part, key, method):
+    """부분합을 key 단위로 재집계 → 이용률/장애율/충전기수/급속/완속/충전·관측시간."""
+    d = part.copy()
+    d["_fast"] = d["cnt"].where(d["is_fast"] == 1, 0)
+    d["_slow"] = d["cnt"].where(d["is_fast"] == 0, 0)
+    g = d.groupby(key, sort=False).agg(
+        충전기수=("cnt", "sum"),
+        _so=("sum_output", "sum"),
+        _uw=("util_w_sum", "sum"),
+        _us=("util_sum", "sum"),
+        _fa=("fault_sum", "sum"),
+        _ch=("charge_h_sum", "sum"),
+        _ob=("obs_h_sum", "sum"),
+        급속=("_fast", "sum"),
+        완속=("_slow", "sum"),
+    )
+    n = g["충전기수"].replace(0, np.nan)
+    if method == "weighted":
+        so = g["_so"].where(g["_so"] > 0, np.nan)
+        g["이용률"] = np.where(g["_so"] > 0, g["_uw"] / so, g["_us"] / n)
+    else:
+        g["이용률"] = g["_us"] / n
+    g["장애율"] = g["_fa"] / n
+    g["충전시간(h)"] = g["_ch"] / n
+    g["관측시간(h)"] = g["_ob"] / n
+    for c in ("이용률", "장애율"):
+        g[c] = g[c].round(2)
+    for c in ("충전시간(h)", "관측시간(h)"):
+        g[c] = g[c].round(1)
+    g["급속"] = g["급속"].astype(int)
+    g["완속"] = g["완속"].astype(int)
+    return g
+
+
+def summarize_stations(part, method="weighted"):
+    """부분합 → 충전소 단위 요약 (기존 station_summary와 동일 컬럼)."""
+    if part is None or part.empty:
+        return pd.DataFrame()
+    g = _reagg(part, "stat_id", method)
+    attr = part.groupby("stat_id", sort=False).agg(
+        충전소명=("stat_nm", "first"), 운영사=("busi_nm", "first"),
+        lat=("lat", "first"), lng=("lng", "first"))
+    g = g.join(attr).reset_index()
+    out = g[["stat_id", "충전소명", "운영사", "이용률", "장애율",
+             "충전기수", "급속", "완속", "충전시간(h)", "관측시간(h)", "lat", "lng"]]
+    return out.sort_values("이용률", ascending=False).reset_index(drop=True)
+
+
+def summarize_cpos(part, method="weighted"):
+    """부분합 → 운영사(CPO) 단위 요약 (기존 cpo_summary와 동일 컬럼)."""
+    if part is None or part.empty:
+        return pd.DataFrame()
+    g = _reagg(part, "busi_nm", method)
+    nst = part.groupby("busi_nm", sort=False).agg(충전소수=("stat_id", "nunique"))
+    g = g.join(nst).reset_index().rename(columns={"busi_nm": "운영사(CPO)"})
+    g["운영사(CPO)"] = g["운영사(CPO)"].replace("", "(미상)").fillna("(미상)")
+    out = g[["운영사(CPO)", "충전소수", "충전기수", "급속", "완속",
+             "이용률", "장애율", "충전시간(h)", "관측시간(h)"]]
+    return out.sort_values("충전기수", ascending=False).reset_index(drop=True)
+
+
+def kpi_from_partials(part, method="weighted"):
+    """상단 KPI용 스칼라 묶음."""
+    if part is None or part.empty:
+        return {}
+    tot = part["cnt"].sum()
+    so = part["sum_output"].sum()
+    util = (part["util_w_sum"].sum() / so) if (method == "weighted" and so > 0) \
+        else (part["util_sum"].sum() / tot if tot else float("nan"))
+    return {
+        "충전소수": int(part["stat_id"].nunique()),
+        "충전기수": int(tot),
+        "운영사수": int(part["busi_nm"].replace("", pd.NA).dropna().nunique()),
+        "평균이용률": round(float(util), 2),
+        "관측시간": round(float(part["obs_h_sum"].sum() / tot), 1) if tot else 0.0,
+    }
+
+
+def type_util(part, method="weighted"):
+    """급속/완속 평균 이용률 (CPO 탭 하단)."""
+    if part is None or part.empty:
+        return {}
+    g = _reagg(part, "is_fast", method)
+    out = {}
+    for isf, label in ((1, "급속"), (0, "완속")):
+        if isf in g.index:
+            out[label] = float(g.loc[isf, "이용률"])
+    return out
+
+
 def search_stations(term, limit=100):
     """충전소명 또는 주소로 전국 검색 (매칭만 조회 → 가벼움)."""
     like = f"%{term}%"
