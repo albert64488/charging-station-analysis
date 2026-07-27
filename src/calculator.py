@@ -193,11 +193,17 @@ def summarize_stations(part, method="weighted"):
     if part is None or part.empty:
         return pd.DataFrame()
     g = _reagg(part, "stat_id", method)
-    attr = part.groupby("stat_id", sort=False).agg(
-        충전소명=("stat_nm", "first"), 운영사=("busi_nm", "first"),
-        lat=("lat", "first"), lng=("lng", "first"))
+    aggs = dict(충전소명=("stat_nm", "first"), 운영사=("busi_nm", "first"),
+                lat=("lat", "first"), lng=("lng", "first"))
+    if "kind_detail" in part.columns:
+        aggs["kind_detail"] = ("kind_detail", "first")
+    attr = part.groupby("stat_id", sort=False).agg(**aggs)
     g = g.join(attr).reset_index()
-    out = g[["stat_id", "충전소명", "운영사", "이용률", "장애율",
+    if "kind_detail" in g.columns:
+        g["유형"] = g["kind_detail"].map(config.kind_detail_name)
+    else:
+        g["유형"] = "(미분류)"
+    out = g[["stat_id", "충전소명", "운영사", "유형", "이용률", "장애율",
              "충전기수", "급속", "완속", "충전시간(h)", "관측시간(h)", "lat", "lng"]]
     return out.sort_values("이용률", ascending=False).reset_index(drop=True)
 

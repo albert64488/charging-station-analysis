@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS stations (
     busi_id     TEXT,
     busi_nm     TEXT,
     zcode       TEXT,
+    kind        TEXT,               -- 충전소 구분 대분류 (API kind)
+    kind_detail TEXT,               -- 충전소 구분 상세 (API kindDetail)
     updated_at  TEXT
 );
 
@@ -63,6 +65,16 @@ CREATE INDEX IF NOT EXISTS idx_chargers_stat ON chargers(stat_id);
 """
 
 
+def _ensure_column(conn, table, col, coltype):
+    """기존 테이블에 컬럼이 없으면 추가 (SQLite 마이그레이션용)."""
+    try:
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if col not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+    except Exception:
+        pass  # 스키마 조회 실패해도 앱/수집이 막히지 않게
+
+
 def _apply_schema(conn):
     """스키마 문장 개별 실행 (Postgres는 AUTOINCREMENT→BIGSERIAL 변환)."""
     schema = SCHEMA
@@ -72,6 +84,9 @@ def _apply_schema(conn):
         s = stmt.strip()
         if s:
             conn.execute(s)
+    # 기존 DB(구 스키마)에 유형 컬럼 백필 마이그레이션
+    _ensure_column(conn, "stations", "kind", "TEXT")
+    _ensure_column(conn, "stations", "kind_detail", "TEXT")
 
 
 # --- Turso(libsql-client) 어댑터: sqlite3.Connection처럼 보이게 감싼다 ---
@@ -302,14 +317,16 @@ def fetch_df(conn, sql, params=()):
 # --- 배치 upsert ---
 
 def upsert_stations(conn, rows):
-    """rows: (stat_id, stat_nm, addr, lat, lng, busi_id, busi_nm, zcode, updated_at)"""
+    """rows: (stat_id, stat_nm, addr, lat, lng, busi_id, busi_nm, zcode, kind, kind_detail, updated_at)"""
     conn.executemany(
         """
-        INSERT INTO stations (stat_id, stat_nm, addr, lat, lng, busi_id, busi_nm, zcode, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?)
+        INSERT INTO stations
+            (stat_id, stat_nm, addr, lat, lng, busi_id, busi_nm, zcode, kind, kind_detail, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(stat_id) DO UPDATE SET
             stat_nm=excluded.stat_nm, addr=excluded.addr, lat=excluded.lat, lng=excluded.lng,
             busi_id=excluded.busi_id, busi_nm=excluded.busi_nm, zcode=excluded.zcode,
+            kind=excluded.kind, kind_detail=excluded.kind_detail,
             updated_at=excluded.updated_at
         """,
         rows,

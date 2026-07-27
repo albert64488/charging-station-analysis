@@ -46,6 +46,8 @@ CREATE TABLE station_stats (
     lat          REAL,
     lng          REAL,
     zcode        TEXT,
+    kind         TEXT,             -- 충전소 구분 대분류
+    kind_detail  TEXT,             -- 충전소 구분 상세
     cnt          INTEGER,          -- 이 (충전소,타입,운영사)의 충전기 수
     sum_output   REAL,             -- Σ output(kW)
     util_w_sum   REAL,             -- Σ(이용률 × output)
@@ -66,10 +68,10 @@ def build_partials():
     if ch.empty:
         return pd.DataFrame()
 
-    # addr는 load_durations에 없음 → stations에서 병합
+    # addr/kind는 load_durations에 없음 → stations에서 병합
     with db.get_conn() as conn:
-        addr = db.fetch_df(conn, "SELECT stat_id, addr FROM stations")
-    ch = ch.merge(addr, on="stat_id", how="left")
+        smeta = db.fetch_df(conn, "SELECT stat_id, addr, kind, kind_detail FROM stations")
+    ch = ch.merge(smeta, on="stat_id", how="left")
 
     ch["out"] = ch["output"].fillna(0.0)
     ch["util_w"] = ch["이용률"] * ch["out"]
@@ -81,6 +83,8 @@ def build_partials():
         lat=("lat", "first"),
         lng=("lng", "first"),
         zcode=("zcode", "first"),
+        kind=("kind", "first"),
+        kind_detail=("kind_detail", "first"),
         cnt=("charger_key", "size"),
         sum_output=("out", "sum"),
         util_w_sum=("util_w", "sum"),

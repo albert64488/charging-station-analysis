@@ -63,7 +63,8 @@ def generate_event_history(days, updated_at):
     out = []
     for st in _STATIONS:
         srow = (st["statId"], st["statNm"], st["addr"], st["lat"], st["lng"],
-                st["busiId"], st["busiNm"], st["zcode"], updated_at)
+                st["busiId"], st["busiNm"], st["zcode"],
+                st.get("kind", ""), st.get("kindDetail", ""), updated_at)
         for chger_id, chger_type, output in st["chargers"]:
             key = f"{st['statId']}-{chger_id}"
             is_fast = config.classify_fast(chger_type, output)

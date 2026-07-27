@@ -159,6 +159,21 @@ with st.sidebar:
         if not part_all.empty else []
     sel_cpos = st.multiselect("운영사 (CPO)", cpo_opts, placeholder="전체 (선택 시 해당 CPO만)")
 
+    # 충전소 유형 (대분류 → 상세). 스냅샷에 유형 없으면(구버전) 숨김.
+    sel_kind = sel_detail = None
+    kinds_present = (sorted(part_all["kind"].dropna().replace("", pd.NA).dropna().unique())
+                     if ("kind" in part_all.columns and not part_all.empty) else [])
+    if kinds_present:
+        kopts = {"전체": None}
+        kopts.update({config.kind_name(k): k for k in kinds_present})
+        sel_kind = kopts[st.selectbox("충전소 유형", list(kopts.keys()))]
+        if sel_kind is not None:
+            sub = part_all[part_all["kind"] == sel_kind]
+            dpres = sorted(sub["kind_detail"].dropna().replace("", pd.NA).dropna().unique())
+            dopts = {"전체 (상세)": None}
+            dopts.update({config.kind_detail_name(d): d for d in dpres})
+            sel_detail = dopts[st.selectbox("상세 유형", list(dopts.keys()))]
+
     type_sel = st.radio("충전기 구분", ["전체", "급속", "완속"], horizontal=True)
     method = "weighted" if st.radio("충전소·CPO 집계", ["출력 가중평균 (권장)", "단순평균"]).startswith("출력") else "simple"
 
@@ -167,6 +182,10 @@ part = part_all
 if not part.empty:
     if sel_cpos:
         part = part[part["busi_nm"].isin(sel_cpos)]
+    if sel_kind is not None:
+        part = part[part["kind"] == sel_kind]
+        if sel_detail is not None:
+            part = part[part["kind_detail"] == sel_detail]
     part_cpo = part.copy()          # 타입 필터 전 (급속/완속 비교용)
     if type_sel == "급속":
         part = part[part["is_fast"] == 1]
@@ -244,7 +263,7 @@ with tab_station:
     st.subheader("충전소별 이용률")
     st.caption("👉 행을 클릭하면 아래에 해당 충전소의 실시간 충전기 상태가 표시됩니다.")
     _event = st.dataframe(
-        stations[["충전소명", "운영사", "이용률", "장애율", "충전기수", "급속", "완속", "충전시간(h)", "관측시간(h)"]],
+        stations[["충전소명", "운영사", "유형", "이용률", "장애율", "충전기수", "급속", "완속", "충전시간(h)", "관측시간(h)"]],
         width="stretch", hide_index=True, column_config=COLCFG,
         on_select="rerun", selection_mode="single-row", key="station_table",
     )

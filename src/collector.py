@@ -55,7 +55,8 @@ def _meta_rows(item, updated_at):
     station_row = (
         stat_id, item.get("statNm", ""), item.get("addr", ""),
         _to_float(item.get("lat")), _to_float(item.get("lng")),
-        item.get("busiId", ""), busi_nm, item.get("zcode", ""), updated_at,
+        item.get("busiId", ""), busi_nm, item.get("zcode", ""),
+        item.get("kind", ""), item.get("kindDetail", ""), updated_at,
     )
     charger_row = (
         charger_key, stat_id, chger_id, chger_type,
@@ -123,11 +124,10 @@ def _refresh_region(zcode, zscode, updated_at, obs_start):
                         util.parse_stat_dt(item.get("statUpdDt"), default=updated_at)))
 
     keys = [c[0] for c in charger_rows]
-    sids = list(station_rows.keys())
     with db.get_conn() as conn:
         known_ch = db.known_charger_keys(conn, keys)
-        known_st = db.known_station_ids(conn, sids)
-        db.upsert_stations(conn, [r for sid, r in station_rows.items() if sid not in known_st])
+        # 충전소 메타는 전량 upsert — 기존 충전소의 유형(kind) 등 변경분도 반영/백필
+        db.upsert_stations(conn, list(station_rows.values()))
         new_chargers = [r for r in charger_rows if r[0] not in known_ch]
         db.upsert_chargers(conn, new_chargers)
 
