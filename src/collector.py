@@ -9,6 +9,7 @@
 → 저장량이 충전기 수만큼 고정(안 늘어남). 이용률 = (누적 + 현재진행분) / 관측창.
 """
 import datetime
+import os
 
 import config
 from src import api_client, db, sample_data, util
@@ -92,7 +93,11 @@ def _apply_change(current, stats, key, new_stat, change_dt, obs_start, state_row
 def _get_obs_start(conn, updated_at):
     obs = db.get_meta(conn, "observation_start_at")
     if not obs:
-        obs = updated_at
+        # 최초 시드 시 관측창을 소급(기본 0=지금). 24h 등으로 잡으면 첫날부터
+        # 현재상태 기반 추정치가 나온다(빈 관측창의 0% 시작 방지).
+        back = int(os.getenv("OBS_SEED_BACKDATE_HOURS", "0") or "0")
+        obs = ((util.now_dt() - datetime.timedelta(hours=back)).strftime(util.FMT)
+               if back > 0 else updated_at)
         db.set_meta(conn, "observation_start_at", obs)
     return obs
 

@@ -84,6 +84,8 @@ jobs:
         env:
           DATAGO_SERVICE_KEY: ${{ secrets.DATAGO_SERVICE_KEY }}
           # DATABASE_URL 미설정 → 로컬 SQLite(working.db) 사용
+          # 최초 시드 시에만 적용: 관측창을 24h 소급 → 첫날부터 추정치 표시
+          OBS_SEED_BACKDATE_HOURS: "24"
         run: python run_collect.py ${{ steps.m.outputs.mode }} --nationwide
 
       - name: 작업 DB 저장 (collector-state 자산)
