@@ -59,6 +59,9 @@ def load_durations(zcode=None, start=None, end=None, stat_id=None, stat_ids=None
     if df.empty:
         return df
 
+    # 운영사명 정규화: (주)/㈜/브랜드 변형을 대표명으로 통합 (집계 정확도)
+    df["busi_nm"] = df["busi_nm"].map(config.normalize_cpo)
+
     t1d = pd.to_datetime(t1)
     obs = pd.to_datetime(obs_start) if obs_start else t1d
     window = max((t1d - obs).total_seconds(), 1.0)
@@ -141,6 +144,8 @@ def search_stations(term, limit=100):
             "WHERE stat_nm LIKE ? OR addr LIKE ? ORDER BY stat_nm LIMIT ?",
             [like, like, limit],
         )
+    if not df.empty:
+        df["busi_nm"] = df["busi_nm"].map(config.normalize_cpo)
     return df.rename(columns={"stat_nm": "충전소명", "busi_nm": "운영사", "addr": "주소"})
 
 
@@ -198,6 +203,7 @@ def live_status(stat_id):
             [stat_id],
         )
     info = sinfo.iloc[0].to_dict() if not sinfo.empty else {"stat_nm": "", "addr": "", "busi_nm": ""}
+    info["busi_nm"] = config.normalize_cpo(info.get("busi_nm"))
     if df.empty:
         return info, df
 
