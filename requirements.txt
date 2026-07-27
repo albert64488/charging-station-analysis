@@ -1,7 +1,8 @@
-# 전체(로컬 개발 + Streamlit Cloud 대시보드)
+# 대시보드(Streamlit Cloud) — 앱은 정적 스냅샷(SQLite)만 읽음. 외부 DB 미사용.
 requests>=2.31
 python-dotenv>=1.0
 pandas>=2.0
+numpy>=1.24
 streamlit>=1.35
-psycopg[binary]>=3.1
-# Turso는 HTTP API(v2/pipeline) 직접 호출 — 별도 클라이언트 불필요
+pydeck>=0.8
+# psycopg/Turso 등 외부 DB 클라이언트는 스냅샷 아키텍처 전환으로 불필요(수집기 전용).
