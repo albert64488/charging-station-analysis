@@ -107,9 +107,9 @@ def _nearby(stat_id, radius):
 
 
 # ---------------- 스냅샷 준비 (라이브 DB 미사용) ----------------
-@st.cache_data(ttl=600, show_spinner="스냅샷 불러오는 중…")
+@st.cache_data(ttl=180, show_spinner="스냅샷 불러오는 중…")
 def _snapshot():
-    """최대 10분마다 최신 스냅샷 확인·다운로드. (경로, 생성시각) 반환."""
+    """최대 3분마다 최신 스냅샷 확인. 바뀐 경우에만 재다운로드. (경로, 생성시각) 반환."""
     return snapshot.ensure()
 
 

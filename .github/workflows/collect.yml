@@ -62,12 +62,9 @@ jobs:
             fi
           fi
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
-          # 스냅샷 발행: refresh는 항상, poll은 ~30분마다(:00·:30 트리거)만
-          if [ "$MODE" = "refresh" ] || [ $((10#$M % 30)) -lt 10 ]; then
-            echo "snapshot=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "snapshot=0" >> "$GITHUB_OUTPUT"
-          fi
+          # 스냅샷은 매 실행(=매 poll, 10분)마다 발행 → 앱 데이터 신선도 극대화.
+          # 외부 DB 제거로 스냅샷 빌드가 로컬 working.db에서만 읽어 비용 부담 없음.
+          echo "snapshot=1" >> "$GITHUB_OUTPUT"
 
       - name: 작업 DB 복원 (collector-state 자산)
         env:
