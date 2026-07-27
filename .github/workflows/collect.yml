@@ -84,8 +84,8 @@ jobs:
         env:
           DATAGO_SERVICE_KEY: ${{ secrets.DATAGO_SERVICE_KEY }}
           # DATABASE_URL 미설정 → 로컬 SQLite(working.db) 사용
-          # 최초 시드 시에만 적용: 관측창을 24h 소급 → 첫날부터 추정치 표시
-          OBS_SEED_BACKDATE_HOURS: "24"
+          # obs_start는 관측 시작=지금으로 둔다(backdate 미사용). 소급하면 관측창만
+          # 커지고 누적은 0부터라 초기 이용률이 오히려 눌린다. 지금부터 누적→수시간 내 수렴.
         run: python run_collect.py ${{ steps.m.outputs.mode }} --nationwide
 
       - name: 작업 DB 저장 (collector-state 자산)
