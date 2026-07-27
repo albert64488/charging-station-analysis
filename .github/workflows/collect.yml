@@ -1,10 +1,15 @@
 name: collect
 
+# 외부 DB(Neon) 없이 동작: 수집 상태(working.db)를 Release 자산으로 주고받는다.
+#  - collector-state : 수집기 작업 DB(working.db.gz). 매 실행마다 복원→갱신→저장.
+#  - latest-data     : 앱이 읽는 스냅샷(snapshot.db.gz + snapshot.txt). 발행 주기마다 갱신.
+# → egress 할당량/콜드스타트/용량 문제의 원인이던 외부 DB를 제거.
+
 on:
   schedule:
-    # poll(10분)은 cron-job.org가 안정적으로 트리거함. 여기선 refresh만 백업 스케줄로.
+    # poll(10분)은 cron-job.org가 트리거. 여기선 refresh 백업 스케줄만.
     - cron: "30 */6 * * *"   # 하루 4회 전수 refresh (자기보정)
-  workflow_dispatch:          # 수동 실행(시드용). mode 입력 선택
+  workflow_dispatch:
     inputs:
       mode:
         description: "refresh | poll"
@@ -12,14 +17,19 @@ on:
         default: refresh
         options: [refresh, poll]
 
-# 동시 실행 방지(앞 작업이 끝날 때까지 대기)
+# 동시 실행 방지 — working.db 자산 경합 방지(순차 실행)
 concurrency:
   group: collect
   cancel-in-progress: false
 
-# 스냅샷을 Release 자산으로 발행하려면 contents:write 필요
+# Release 자산 읽기/쓰기
 permissions:
   contents: write
+
+env:
+  STATE_TAG: collector-state     # 수집기 작업 DB 보관 릴리스
+  SNAP_TAG: latest-data          # 앱이 읽는 스냅샷 릴리스
+  DB_PATH: working.db            # 로컬 SQLite 경로 (DATABASE_URL 미설정 → sqlite 모드)
 
 jobs:
   collect:
@@ -52,26 +62,43 @@ jobs:
             fi
           fi
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
-          # 스냅샷 발행: refresh는 항상, poll은 ~30분마다(:00·:30 트리거)만 → Neon 부하 절감
+          # 스냅샷 발행: refresh는 항상, poll은 ~30분마다(:00·:30 트리거)만
           if [ "$MODE" = "refresh" ] || [ $((10#$M % 30)) -lt 10 ]; then
             echo "snapshot=1" >> "$GITHUB_OUTPUT"
           else
             echo "snapshot=0" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: 작업 DB 복원 (collector-state 자산)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release download "$STATE_TAG" --pattern working.db.gz --clobber 2>/dev/null; then
+            gunzip -f working.db.gz
+            echo "복원됨: working.db ($(du -h working.db | cut -f1))"
+          else
+            echo "이전 상태 없음 — 빈 DB로 시작 (첫 refresh가 시드)"
+          fi
+
       - name: 수집 실행 (${{ steps.m.outputs.mode }})
         env:
           DATAGO_SERVICE_KEY: ${{ secrets.DATAGO_SERVICE_KEY }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          # DATABASE_URL 미설정 → 로컬 SQLite(working.db) 사용
         run: python run_collect.py ${{ steps.m.outputs.mode }} --nationwide
 
-      # ---- 정적 스냅샷 빌드·발행 (앱이 읽는 데이터) ----
+      - name: 작업 DB 저장 (collector-state 자산)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gzip -f -k working.db     # -k: 원본 유지(다음 스냅샷 빌드가 읽음)
+          gh release view "$STATE_TAG" >/dev/null 2>&1 || \
+            gh release create "$STATE_TAG" --title "$STATE_TAG" \
+              --notes "수집기 작업 DB (내부용). 앱은 latest-data를 읽음." --prerelease
+          gh release upload "$STATE_TAG" working.db.gz --clobber
+
+      # ---- 앱이 읽는 스냅샷 빌드·발행 ----
       - name: 스냅샷 빌드 (station_stats 부분합 + 원본 복사)
         if: steps.m.outputs.snapshot == '1'
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           python scripts/build_snapshot.py --out snapshot.db
           python -c "import sqlite3;print(sqlite3.connect('snapshot.db').execute(\"SELECT value FROM meta WHERE key='snapshot_at'\").fetchone()[0])" > snapshot.txt
@@ -82,7 +109,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view latest-data >/dev/null 2>&1 || \
-            gh release create latest-data --title "latest-data" \
+          gh release view "$SNAP_TAG" >/dev/null 2>&1 || \
+            gh release create "$SNAP_TAG" --title "$SNAP_TAG" \
               --notes "앱이 읽는 자동 발행 스냅샷 (수집기가 갱신)" --prerelease
-          gh release upload latest-data snapshot.db.gz snapshot.txt --clobber
+          gh release upload "$SNAP_TAG" snapshot.db.gz snapshot.txt --clobber
